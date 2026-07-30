@@ -74,6 +74,74 @@ Specs drive development: code changes should follow what’s written in `specs/0
 
 ---
 
+## Setup (local development)
+
+RepoBridge supports multiple setup styles so you can use whatever you’re comfortable with.
+
+### 1. Classic venv + requirements.txt
+
+This is the simplest if you’re used to `requirements.txt`.
+
+1. Create and activate a virtual environment:
+
+   ```bash
+   python -m venv .venv
+   # Linux/macOS
+   source .venv/bin/activate
+   # Windows (PowerShell)
+   .\.venv\Scripts\Activate.ps1
+   ```
+
+2. Install dependencies from `requirements.txt`:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Run the app:
+
+   ```bash
+   uvicorn src.repobridge.main:app --reload
+   ```
+
+---
+
+### 2. venv + direct pip install
+
+If you prefer not to use `requirements.txt`, you can install directly using the dependency list:
+
+1. Create and activate `.venv` (same as above).
+
+2. Install packages:
+
+   ```bash
+   pip install fastapi uvicorn[standard] jinja2 httpx pydantic sqlalchemy aiosqlite pytest pytest-asyncio
+   ```
+
+3. Run the app:
+
+   ```bash
+   uvicorn src.repobridge.main:app --reload
+   ```
+
+---
+
+### 3. Future: tooling that reads `pyproject.toml`
+
+RepoBridge also includes a `pyproject.toml` describing project metadata and dependencies. Modern Python tools (like `uv`, `poetry`, or `pip-tools`) can read this file directly and manage environments for you.
+
+Example (conceptual, not required for v0.1):
+
+```bash
+# Using uv (if installed)
+uv sync
+uv run uvicorn src.repobridge.main:app --reload
+```
+
+For now, the classic venv + `requirements.txt` flow is enough. The `pyproject.toml` file is there to support more advanced packaging and tooling later. 
+
+---
+
 ## v0.1 scope (short version)
 
 - Public GitHub repositories only.

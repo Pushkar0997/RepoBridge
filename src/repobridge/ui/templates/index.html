@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section>
+  <h2>Analyze a GitHub repository</h2>
+  <p>Paste a public GitHub repo URL below to start an analysis (this is just the UI shell for v0.1).</p>
+
+  <form id="analyze-form">
+    <label for="repo_url">Repository URL</label><br>
+    <input type="url" id="repo_url" name="repo_url" placeholder="https://github.com/owner/repo" required style="width: 100%; max-width: 480px;"><br><br>
+
+    <label for="branch_or_ref">Branch or ref (optional)</label><br>
+    <input type="text" id="branch_or_ref" name="branch_or_ref" placeholder="main"><br><br>
+
+    <button type="submit">Analyze (not wired yet)</button>
+  </form>
+
+  <p style="margin-top: 1rem; color: #666;">
+    The form is not connected to the backend yet – Milestone 0 only guarantees that the UI and health endpoint load correctly.
+  </p>
+</section>
+{% endblock %}
