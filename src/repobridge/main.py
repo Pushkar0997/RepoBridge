@@ -1,10 +1,13 @@
+from __future__ import annotations
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 import logging
-import os
 from pathlib import Path
+
+from src.repobridge.api.routes_runs import router as runs_router
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -15,6 +18,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("repobridge")
 
+# FastAPI app
 app = FastAPI(title="RepoBridge v0.1", version="0.1.0")
 
 # Templates and static
@@ -43,3 +47,7 @@ async def index(request: Request):
         name="index.html",
         context={"title": "RepoBridge v0.1"},
     )
+
+
+# Include API routers (Milestone 1 and later)
+app.include_router(runs_router)
