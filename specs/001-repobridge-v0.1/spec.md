@@ -55,8 +55,11 @@ Initial use cases:
 - **branch_or_ref** (string, optional)  
   Branch, tag, or commit to analyze. If omitted, default to repository default branch.
 
-- **github_token** (string, optional, local only)  
-  Optional personal access token to improve rate limits. Kept local and never logged.
+- **github_token** — *environment only in v0.1; not a request input.*  
+  An optional personal access token may be supplied via the `REPOBRIDGE_GITHUB_TOKEN`
+  environment variable to improve rate limits. It is deliberately **not** accepted per
+  request: v0.1 is local-first and single-user, so a per-request secret would buy nothing
+  while flowing into persistence, diagnostics, and logs. Kept local and never logged.
 
 - **llm_provider** (string, optional)  
   Choice of LLM backend for summary generation (e.g., “openrouter”, “groq”). Defaults may be configured locally.

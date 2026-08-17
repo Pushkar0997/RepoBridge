@@ -9,7 +9,5 @@ class AnalyzeRequest(BaseModel):
     default=None,
     description="Optional branch, tag, or commit to analyze. Defaults to repo's default branch.",
   )
-  github_token: str | None = Field(
-    default=None,
-    description="Optional GitHub personal access token for higher rate limits. Kept local.",
-  )
+  # No github_token field: v0.1 reads the token from REPOBRIDGE_GITHUB_TOKEN only.
+  # See specs/001-repobridge-v0.1/spec.md section 5.

@@ -9,6 +9,8 @@ class GitHubConfig:
     api_base_url: str = "https://api.github.com"
     api_version: str = "2022-11-28"  # GitHub API version header
     token_env_var: str = "REPOBRIDGE_GITHUB_TOKEN"
+    metadata_timeout: float = 10.0
+    tree_timeout: float = 15.0
 
 
 def get_github_token() -> str | None:
