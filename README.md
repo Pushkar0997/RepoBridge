@@ -56,6 +56,8 @@ RepoBridge/
 │       ├── spec.md           # v0.1 product specification
 │       ├── plan.md           # Milestones and implementation plan
 │       ├── tasks.md          # Task breakdown
+│       ├── selection.md      # File selection rules (moved out of spec.md 7.3)
+│       ├── smoke.md          # Smoke suite: sample repos and recorded run results
 │       └── evals.md          # Evaluation and acceptance criteria
 ├── src/
 │   ├── repobridge/
@@ -265,8 +267,8 @@ specific human-readable `message` such as `'node_modules/' is excluded by defaul
 `classification` is `null` — not an empty summary — when the tree call failed, since zero
 counts would read as "we looked and found nothing" rather than "we never looked".
 
-Supported types, the skip rules and the thresholds are defined in
-`specs/001-repobridge-v0.1/spec.md` section 7.3.
+Supported types, the skip rules, the precedence order and the thresholds are defined in
+`specs/001-repobridge-v0.1/selection.md`.
 
 ### GitHub token
 

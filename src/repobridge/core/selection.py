@@ -207,7 +207,7 @@ def classify_entry(
             f"'{basename}' is a generated dependency lockfile, not source content.",
         )
 
-    # 6. Known non-text assets. `.svg` is in this set by judgement (spec.md 7.3):
+    # 6. Known non-text assets. `.svg` is in this set by judgement (selection.md):
     # XML in form, generated export artifact in practice.
     if extension in cfg.non_text_extensions:
         return skip(

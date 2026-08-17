@@ -37,9 +37,9 @@ class SelectionConfig:
     that consume it live in `core/selection.py`. Frozen, with immutable collections,
     because a shared default instance must not be mutable.
 
-    Supported extensions and filenames come from spec.md section 7.3, as widened by its
-    2026-08-17 amendment. `.js`/`.ts` are listed there as optional and are included: v0.1
-    extraction treats code as plain text, so they cost nothing extra.
+    Supported extensions and filenames come from `specs/001-repobridge-v0.1/selection.md`,
+    including its two 2026-08-17 amendments. `.js`/`.ts` are optional there and are included:
+    v0.1 extraction treats code as plain text, so they cost nothing extra.
     """
 
     # A file larger than this is skipped even when its type is supported.
@@ -56,7 +56,7 @@ class SelectionConfig:
             # structured config. `.cnf` is OpenSSL config: same key=value shape as .ini/.cfg
             ".json", ".yml", ".yaml", ".toml", ".cfg", ".cnf", ".ini", ".in",
             # `.bat` is the Windows counterpart of `.sh`; supporting one and not the
-            # other was asymmetry rather than judgement (spec.md 7.3, 2nd amendment)
+            # other was asymmetry rather than judgement (selection.md, 2nd amendment)
             ".bat",
             # template variants of config files: text by construction, and often the
             # only committed form (.env.example, config.yml.template)
@@ -86,7 +86,7 @@ class SelectionConfig:
 
     # Known non-text types. spec.md names "large images, archives"; this list covers
     # images, archives, media, fonts, compiled artifacts and databases.
-    # `.svg` is here by judgement, not by accident — see spec.md section 7.3.
+    # `.svg` is here by judgement, not by accident — see selection.md.
     non_text_extensions: frozenset[str] = frozenset(
         {
             ".svg",

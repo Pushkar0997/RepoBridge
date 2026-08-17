@@ -277,7 +277,7 @@ live result backs it. Test suite at time of judging: **162 passing**. Live resul
 | Criterion | Source | Verdict | Evidence |
 |---|---|---|---|
 | File classification rules | plan D1 | PASS | `core/selection.py:classify_entry`, nine-step documented precedence |
-| Supported file extension list | plan D2 | PASS | `config.py:SelectionConfig`, from spec.md 7.3 as amended 2026-08-17 |
+| Supported file extension list | plan D2 | PASS | `config.py:SelectionConfig`, from `selection.md` as amended 2026-08-17 |
 | Skip reason schema | plan D3 | PASS | `selection.py:SkipReason`, closed enum of six; `test_every_skip_reason_in_the_enum_is_reachable` proves none is dead |
 | Tests for common repo layouts | plan D4 | PASS | `tests/test_selection.py` (mixed, notebook, binary, vendored, oversized); `smoke.md` Run 2 on two live repos |
 | Markdown, code, notebooks, text, JSON recognised | plan E1 | PASS | `test_supported_extensions_are_selected`; live 30/30 on the notebook-heavy repo |
@@ -312,8 +312,8 @@ The 23 that remain, by extension:
 | `.csr` | 3 | certificate requests — not readable content |
 | `.pem` | 3 | certificates — not readable content |
 | `.crt`, `.srl` | 2 | certificates — not readable content |
-| `.css` | 1 | deliberately unsupported per spec.md 7.3 |
-| `.html` | 1 | deliberately unsupported per spec.md 7.3 |
+| `.css` | 1 | deliberately unsupported per `selection.md` |
+| `.html` | 1 | deliberately unsupported per `selection.md` |
 | `.bat` | 1 | **Borderline**: a shell script equivalent; `.sh` is supported, `.bat` is not |
 | `.typed` | 1 | PEP 561 marker; its *existence* is the signal, its content is empty |
 
@@ -322,7 +322,7 @@ scope, but `.cnf`, `.bat` and `py.typed` were excluded by omission rather than d
 
 #### Second pass — 2026-08-17: both PARTIALs closed
 
-**"No important readable files accidentally excluded" — now PASS.** The second spec.md 7.3
+**"No important readable files accidentally excluded" — now PASS.** The second `selection.md`
 amendment added `.cnf` (key=value config, structurally identical to the already-supported
 `.ini`/`.cfg`), `.bat` (the Windows counterpart of the already-supported `.sh` — asymmetry,
 not judgement), and `py.typed` / `.nojekyll` by filename (zero-byte markers whose existence
@@ -333,7 +333,7 @@ Re-measured live, `smoke.md` Run 3: `psf/requests` moved from 100 selected / 23 
 to **107 selected / 16 unsupported**. The remaining 16 are each traceable to a written
 decision — 14 credential-shaped TLS fixtures (`.key` ×4, `.csr` ×3, `.pem` ×3, `ca` ×2,
 `.crt`, `.srl`) deferred to the `CREDENTIAL_LIKE` proposal in `plan.md`, plus `.css` and
-`.html`, listed in spec.md 7.3 as deliberately unsupported. The criterion is *accidentally*
+`.html`, listed in `selection.md` as deliberately unsupported. The criterion is *accidentally*
 excluded; nothing in the residue is now accidental. Driving the count to zero was never the
 target.
 

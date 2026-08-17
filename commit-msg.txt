@@ -1,22 +1,15 @@
-﻿Milestone 3: file selection and classification
+﻿Selection rules moved to their own spec; smoke suite classification pass
 
-- Add core/selection.py: every tree entry classified SELECTED / SKIPPED /
-  FAILED, no entry unaccounted for; accounts_for_every_entry asserted live
-  and in tests
-- Closed enum of skip reasons with a specific human-readable message each;
-  precedence is position -> type -> name -> extension -> size, so TOO_LARGE
-  means "would have read this" rather than doubling up
-- LOCKFILE rule prevents package-lock.json being selected as valid .json
-- NON_TEXT_ASSET (renamed from BINARY_EXTENSION) covers .svg without the
-  message falsely claiming it is binary
-- Case-insensitive filename and lockfile matching; excluded_directories
-  deliberately left case-sensitive, recorded in plan.md
-- /api/analyze returns a classification summary: counts per status, counts
-  by skip reason, capped sample
-- Two spec amendments widening the supported list: 72 -> 16 unsupported on
-  psf/requests, every remaining exclusion traceable to a written decision
-- CREDENTIAL_LIKE recorded in plan.md as a candidate, not built
-- smoke.md Run 2 and Run 3; twitter/twemoji at 7,413 entries, 99.9%
-  non_text_asset, identity holds
+- Move selection rules from spec.md 7.3 (104 lines) into selection.md, both
+  amendments preserved and dated; spec.md keeps the requirement and points
+  at the detail
+- Update eight cross-references across README, evals.md and smoke.md, plus
+  four stale section citations in config.py and selection.py
+- Add a summary index to smoke.md; record Run 4 classifying the three repos
+  that had retrieval figures but no classification figures
+- Accounting identity holds at 37,393 entries on kubernetes/kubernetes,
+  verified independently of the flag the API reports
+- too_large and excluded_directory observed live for the first time; five of
+  six skip reasons now seen on real repositories
 
-Suite: 59 tests -> 168. Milestone 3 closes.
+Suite: 168 tests, unchanged.

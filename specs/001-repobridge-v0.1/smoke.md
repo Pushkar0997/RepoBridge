@@ -8,21 +8,64 @@ repos for smoke tests" — with recorded outcomes rather than a single ad-hoc ch
 
 ---
 
+## Current state
+
+Latest recorded result per repo. The run log below is the historical record; this table is
+the answer to "where do we stand". Update it whenever a run is added.
+
+| Repo | Latest run | Date | Entries | Selected | Skipped | Leading skip reason |
+|---|---|---|---|---|---|---|
+| `kubernetes/kubernetes` | Run 4 | 2026-08-17 | 37393 | 8376 | 22924 | `unsupported_extension` (17167) |
+| `github/docs` | Run 4 | 2026-08-17 | 14901 | 11215 | 2227 | `non_text_asset` (1814) |
+| `twitter/twemoji` | Run 3 | 2026-08-17 | 7413 | 17 | 7389 | `non_text_asset` (7378) |
+| `psf/requests` | Run 3 | 2026-08-17 | 153 | 107 | 23 | `unsupported_extension` (16) |
+| `Pushkar0997/quantum-toybox` | Run 3 | 2026-08-17 | 40 | 30 | 0 | — (nothing skipped) |
+| `octocat/Hello-World` | Run 4 | 2026-08-17 | 1 | 1 | 0 | — (nothing skipped) |
+| `Pushkar0997/definitely-not-a-real-repo-zzz` | Run 1 | 2026-08-17 | — | — | — | 404 at metadata, as intended |
+
+Every repo in the suite has now been classified; there are no unmeasured cells left.
+
+**The accounting identity holds on every one of them**, including `kubernetes/kubernetes` at
+37,393 entries: `6093 + 8376 + 22924 + 0 == 37393`, with `accounts_for_every_entry: true`. No
+tree entry has gone unaccounted for in any run, at any scale tried.
+
+| Run | Date | What it covered |
+|---|---|---|
+| Run 1 | 2026-08-17 | Milestone 2 retrieval: six repos, three error cases, quota-exhaustion observations |
+| Run 2 | 2026-08-17 | Milestone 3 classification, first spec amendment |
+| Run 3 | 2026-08-17 | Binary-heavy repo added; second spec amendment re-measured |
+| Run 4 | 2026-08-17 | Classification backfilled for the three Run 1 repos; identity tested at 37,393 entries |
+
+---
+
 ## How to run
 
-No token is required. Each repo costs **two** unauthenticated GitHub calls (metadata + tree)
-against a 60/hour per-IP quota, so a full pass costs ~11 calls. A nonexistent repo costs one,
-because it fails at the metadata step.
+Each repo costs **two** GitHub calls (metadata + tree); a nonexistent repo costs one, because
+it fails at the metadata step. A full pass is ~13 calls.
+
+**A token is strongly recommended.** Without `REPOBRIDGE_GITHUB_TOKEN` set you are on the
+unauthenticated 60/hour per-IP quota, which a full pass will exhaust if anything else has used
+it — that is exactly what happened during the first attempt at Run 1, recorded below. With a
+token the quota is 5000/hour. **Runs 1 through 4 were all authenticated at 5000/hour.**
+
+```bash
+export REPOBRIDGE_GITHUB_TOKEN=your_token_here
+```
+
+Runs are exercised in-process via FastAPI's `TestClient` against `POST /api/analyze`; no
+running server is needed. The unit suite is separate:
 
 ```bash
 python -m pytest -v
 ```
 
-The suite itself is exercised in-process via FastAPI's `TestClient` against `POST
-/api/analyze`; it does not need a running server.
-
 Record for each repo: URL, outcome, file count, chunk count, summary quality notes,
 diagnostics issues, manual observations — the fields `evals.md` specifies.
+
+> **When you record a run, update the "Current state" index above.** A stale index is worse
+> than no index: the run log is append-only history, so the table at the top is the only place
+> that answers "where do we stand", and a reader will trust it. Add the run to the run-index
+> table too.
 
 **Field availability at v0.1 Milestone 2.** `chunk count` and `summary quality` depend on
 extraction (Milestone 5) and summarization (Milestone 6), and `diagnostics issues` depends on
@@ -172,7 +215,7 @@ excluded by omission rather than decision, which is why that criterion is PARTIA
   or logged.
 - **Purpose:** (a) close plan.md Milestone 3's "test binary-heavy repos" validation item with
   a live asset-dominated repository; (b) re-measure the two Run 2 repos after the second
-  spec.md 7.3 amendment added `.cnf`, `.bat`, `py.typed` and `.nojekyll`.
+  `selection.md` amendment added `.cnf`, `.bat`, `py.typed` and `.nojekyll`.
 
 | Repo | Entries | Dirs | Selected | Skipped | Failed | Identity | Skipped by reason |
 |---|---|---|---|---|---|---|---|
@@ -200,11 +243,69 @@ supported types.
 **The 16 remaining unsupported on `psf/requests`**, every one a recorded decision rather than
 an omission: `.key` ×4, `.csr` ×3, `.pem` ×3, extensionless `ca` ×2, `.crt`, `.srl` — 14
 credential-shaped TLS test fixtures, deferred to the `CREDENTIAL_LIKE` proposal in `plan.md` —
-plus `.css` and `.html`, listed in spec.md 7.3 as deliberately not supported.
+plus `.css` and `.html`, listed in `selection.md` as deliberately not supported.
 
 **Limitation.** `twemoji` skips almost everything, and `quantum-toybox` skips nothing. Neither
 is a balanced mixed repository; `psf/requests` remains the only live sample exercising several
 skip reasons at once.
+
+---
+
+### Run 4 — 2026-08-17: classification backfilled, identity tested at scale
+
+- **Quota:** authenticated, 5000/hour (`REPOBRIDGE_GITHUB_TOKEN` set). Token never read or
+  logged; only the presence of the `Authorization` header was checked.
+- **Purpose:** close the `n/c` cells in the index. `kubernetes/kubernetes`, `github/docs` and
+  `octocat/Hello-World` had retrieval figures from Run 1 but predated the Milestone 3
+  classifier, so they had never been classified.
+- **Method:** in-process `TestClient` against `POST /api/analyze`, no `branch_or_ref`.
+
+| Repo | Entries | Dirs | Selected | Skipped | Failed | Identity | Time |
+|---|---|---|---|---|---|---|---|
+| `kubernetes/kubernetes` | 37393 | 6093 | 8376 | 22924 | 0 | **yes** | 3.8 s |
+| `github/docs` | 14901 | 1459 | 11215 | 2227 | 0 | **yes** | 3.9 s |
+| `octocat/Hello-World` | 1 | 0 | 1 | 0 | 0 | yes | 2.1 s |
+
+Skip reasons:
+
+| Repo | `unsupported_extension` | `excluded_directory` | `non_text_asset` | `lockfile` | `too_large` |
+|---|---|---|---|---|---|
+| `kubernetes/kubernetes` | 17167 | 5692 | 19 | 39 | 7 |
+| `github/docs` | 301 | 5 | 1814 | 1 | 106 |
+
+**The accounting identity at 37,393 entries.** This was the case flagged as most likely to
+break it, and it did not:
+
+```
+6093 directories + 8376 selected + 22924 skipped + 0 failed = 37393
+total_entries                                               = 37393
+accounts_for_every_entry: true
+```
+
+Both the arithmetic and the flag the API computes were checked independently, and agree.
+
+**New live coverage from this run.** Two skip reasons fired against real repositories for the
+first time:
+
+- **`too_large`** — 7 files in `kubernetes/kubernetes`, 106 in `github/docs`, over the
+  1,000,000-byte `max_file_bytes` threshold. Previously mock-only.
+- **`excluded_directory`** — 5,692 in `kubernetes/kubernetes`, overwhelmingly its `vendor/`
+  tree. Previously exercised live only in the single-digit range.
+
+Between Run 3 and Run 4, every one of the six skip reasons except `submodule` has now been
+observed on a real repository.
+
+**Observations**
+
+- `kubernetes/kubernetes` reports 17,167 `unsupported_extension`, the largest single skip
+  group in any run. That is `.go` source, and it is the expected consequence of the decision
+  in `selection.md` not to support languages beyond Python/JS/TS in v0.1 — a Go repository
+  will legitimately have most of its source unread. It is a scope limit, not a defect, but it
+  means RepoBridge currently has little to say about Go projects.
+- `github/docs` is the most favourable real repo measured: 11,215 selected of 14,901, because
+  a docs site is mostly Markdown. Its leading skip reason is `non_text_asset` (1,814 images).
+- Neither large repo was truncated by GitHub, so `tree_truncated` remains mock-only even at
+  37,393 entries.
 
 ---
 
