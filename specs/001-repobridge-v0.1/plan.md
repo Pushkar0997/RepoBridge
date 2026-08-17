@@ -163,6 +163,68 @@ Classify files into selected, skipped, or failed with reasons.
 - Test binary-heavy repos.
 - Confirm no silent file drops.
 
+### Candidate for a later milestone — `CREDENTIAL_LIKE` skip reason
+
+**Not in scope for Milestone 3. Recorded so the gap is a known decision, not an oversight.**
+
+Observed while smoke-testing the classifier: `psf/requests` carries `.pem`, `.key`, `.csr`,
+`.crt` and `.srl` files, and they are currently skipped as `unsupported_extension` — the
+blandest reason available. In that repository they are TLS test fixtures and harmless. In a
+repository that had committed a real private key, RepoBridge would skip it with the same
+shrug.
+
+**The proposal.** A `CREDENTIAL_LIKE` skip reason covering credential-shaped files —
+`.pem`, `.key`, `.crt`, `.cer`, `.p12`, `.pfx`, `.jks`, `.keystore`, `id_rsa`-style names,
+and `.env` files carrying real values rather than the `.env.example` templates Milestone 3
+already selects. The file is still skipped; what changes is that it is skipped *for a named
+reason a human would want to see*, and can be counted separately in diagnostics.
+
+**Why it plausibly belongs in the product.** RepoBridge exists to tell a user what is in a
+repository and what happened to it. "This repo contains 4 credential-shaped files" is exactly
+the kind of thing the diagnostics view should surface. Silently filing them under
+"unrecognised extension" is the weaker behaviour.
+
+**Open question — false positives.** The overwhelming majority of `.pem`/`.key` files in
+public repositories are test fixtures, example certificates, or expired demo material.
+Flagging them all as credential-shaped risks crying wolf, which trains users to ignore the
+signal. The distinction cannot be made from a path alone; it needs file content, which means
+this cannot land before content retrieval exists (Milestone 5). Options to weigh then:
+
+- flag on path shape only, and word the message as "credential-shaped, not verified";
+- inspect content for PEM headers (`-----BEGIN ... PRIVATE KEY-----`) before flagging;
+- flag on shape but suppress inside directories named `test`, `tests`, `fixtures`.
+
+**Deliberately unresolved here.** Decide it when the milestone that can see file content is
+planned. Whatever is chosen, the reason code must not imply a security verdict RepoBridge
+has not actually made.
+
+### Recorded decision — directory matching is case-sensitive, filenames are not
+
+**This asymmetry is deliberate. Do not "fix" it without reading this.**
+
+In `config.py:SelectionConfig`, filename matching folds case (`Dockerfile` and `dockerfile`
+both select; `Cargo.lock` and `cargo.lock` are both lockfiles) but `excluded_directories`
+does **not** (`build/` is excluded, `Build/` is not).
+
+**Why the difference.** Folding a filename widens *case*, and the set of names it can newly
+match is tiny and known — there is no meaningful file called `dockerfile` that we would want
+to treat differently from `Dockerfile`. Folding a directory name widens what gets *silently
+dropped from the analysis entirely*, and the risk is not symmetric: on case-sensitive
+filesystems `Build/` and `build/` are genuinely different directories, and a project may well
+have a hand-written `Build/` of real source alongside a generated `build/`. Excluding a
+directory removes every file beneath it, so a false positive there is far more costly than a
+false negative on a filename.
+
+The failure modes are asymmetric, so the rules are too:
+- filename fold, false positive: one extra file read. Cheap.
+- directory fold, false positive: an entire subtree of real source vanishes from the
+  analysis, reported only as `excluded_directory`. Expensive, and exactly the kind of silent
+  loss this product exists to prevent.
+
+**Revisit if** a real repository is observed whose vendored directory is capitalised
+(`Node_Modules/`, `Vendor/`). At that point prefer adding the specific capitalisation to the
+set over folding the whole comparison.
+
 ---
 
 ## Milestone 4 — Persistence and tree view

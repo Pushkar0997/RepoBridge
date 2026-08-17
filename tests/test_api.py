@@ -397,6 +397,179 @@ def test_truncated_tree_still_reports_resolved_ref(install_transport):
 
 
 # --------------------------------------------------------------------------
+# classification summary
+# --------------------------------------------------------------------------
+
+
+def _mixed_entries():
+    return [
+        _dir("src"),
+        _blob("README.md", 400),
+        _blob("src/app.py", 900),
+        _blob("assets/logo.png", 5000),
+        _blob("package-lock.json", 90_000),
+        _blob("main.go", 500),
+        {"path": "external/dep", "type": "commit", "mode": "160000", "sha": "c" * 40},
+    ]
+
+
+def test_classification_summary_is_returned(install_transport):
+    _install(install_transport, lambda ref: httpx.Response(200, json=_tree_body(_mixed_entries())))
+
+    body = client.post(
+        "/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "main"}
+    ).json()
+    c = body["classification"]
+
+    assert c["total_entries"] == 7
+    assert c["directories"] == 1
+    assert c["selected_count"] == 2  # README.md, src/app.py
+    assert c["skipped_count"] == 4  # png, lockfile, go, submodule
+    assert c["failed_count"] == 0
+    assert c["skipped_count_by_reason"] == {
+        "non_text_asset": 1,
+        "lockfile": 1,
+        "submodule": 1,
+        "unsupported_extension": 1,
+    }
+
+
+def test_classification_counts_sum_to_the_total_entry_count(install_transport):
+    _install(install_transport, lambda ref: httpx.Response(200, json=_tree_body(_mixed_entries())))
+
+    body = client.post(
+        "/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "main"}
+    ).json()
+    c = body["classification"]
+
+    assert (
+        c["directories"] + c["selected_count"] + c["skipped_count"] + c["failed_count"]
+        == c["total_entries"]
+        == body["tree_entry_count"]
+    )
+    assert c["accounts_for_every_entry"] is True
+    assert sum(c["skipped_count_by_reason"].values()) == c["skipped_count"]
+
+
+def test_classification_covers_whole_tree_while_samples_are_capped(install_transport):
+    # 300 entries: well past both the tree preview cap and the sample cap
+    entries = [_blob(f"src/file_{i}.py") for i in range(150)]
+    entries += [_blob(f"img/pic_{i}.png") for i in range(150)]
+    _install(install_transport, lambda ref: httpx.Response(200, json=_tree_body(entries)))
+
+    body = client.post(
+        "/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "main"}
+    ).json()
+    c = body["classification"]
+
+    # aggregates cover everything
+    assert c["total_entries"] == 300
+    assert c["selected_count"] == 150
+    assert c["skipped_count"] == 150
+    # samples are capped, and say so
+    assert c["sample_limit"] == 50
+    assert len(c["selected_sample"]) == 50
+    assert len(c["skipped_sample"]) == 50
+    # the tree preview cap is unchanged and independent
+    assert len(body["tree_preview"]) == 50
+
+
+def test_skipped_sample_entries_carry_code_and_message(install_transport):
+    _install(install_transport, lambda ref: httpx.Response(200, json=_tree_body(_mixed_entries())))
+
+    body = client.post(
+        "/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "main"}
+    ).json()
+
+    for item in body["classification"]["skipped_sample"]:
+        assert item["reason"], item
+        assert item["message"], item
+    lockfile = next(
+        i for i in body["classification"]["skipped_sample"] if i["path"] == "package-lock.json"
+    )
+    assert lockfile["reason"] == "lockfile"
+    assert "package-lock.json" in lockfile["message"]
+
+
+def test_failed_entries_appear_in_the_summary(install_transport):
+    entries = [_blob("a.py"), {"type": "blob", "mode": "100644"}]
+    _install(install_transport, lambda ref: httpx.Response(200, json=_tree_body(entries)))
+
+    c = client.post(
+        "/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "main"}
+    ).json()["classification"]
+
+    assert c["failed_count"] == 1
+    assert c["accounts_for_every_entry"] is True
+    assert c["failed_sample"][0]["message"]
+
+
+def test_classification_absent_when_tree_failed(install_transport):
+    """Nothing to classify. Zero counts would read as 'we looked and found nothing'."""
+
+    def responder(ref: str) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    _install(install_transport, responder)
+
+    resp = client.post("/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "main"})
+    body = resp.json()
+
+    # the M2 degraded path is intact
+    assert resp.status_code == 200
+    assert body["metadata"]["full_name"] == f"{OWNER}/{REPO}"
+    assert body["tree_error"] is not None
+    assert body["resolved_ref"] is None
+    # and classification is absent, not empty
+    assert body["classification"] is None
+
+
+def test_classification_absent_when_tree_rate_limited(install_transport):
+    _install(
+        install_transport,
+        lambda ref: httpx.Response(
+            429, headers={"X-RateLimit-Remaining": "0"}, json={"message": "Too Many Requests"}
+        ),
+    )
+
+    resp = client.post("/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "main"})
+    body = resp.json()
+
+    assert resp.status_code == 200
+    assert body["classification"] is None
+    assert body["tree_error"] is not None
+
+
+def test_truncated_tree_still_classifies_what_arrived(install_transport):
+    entries = [_blob("a.py"), _blob("b.png")]
+    _install(
+        install_transport,
+        lambda ref: httpx.Response(200, json=_tree_body(entries, truncated=True)),
+    )
+
+    body = client.post(
+        "/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "main"}
+    ).json()
+
+    assert body["tree_truncated"] is True
+    assert body["classification"]["total_entries"] == 2
+    # the warning says the classification is partial too
+    assert "Classification below covers only those" in body["tree_error"]
+
+
+def test_empty_tree_classifies_cleanly(install_transport):
+    _install(install_transport, lambda ref: httpx.Response(200, json=_tree_body([])))
+
+    c = client.post(
+        "/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "main"}
+    ).json()["classification"]
+
+    assert c["total_entries"] == 0
+    assert c["accounts_for_every_entry"] is True
+    assert c["skipped_count_by_reason"] == {}
+
+
+# --------------------------------------------------------------------------
 # status mapping: GitHub's code is not automatically ours
 # --------------------------------------------------------------------------
 

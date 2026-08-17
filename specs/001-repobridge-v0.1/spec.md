@@ -106,14 +106,104 @@ For each analysis run:
      - selected (supported readable files),
      - skipped (unsupported or obviously non‑readable),
      - failed (errors during retrieval/parsing).
-   - Supported types for v0.1:
-     - `.md`, `.markdown`
-     - `.py`
-     - `.ipynb`
-     - `.json`
-     - `.txt`
-     - optionally `.js`, `.ts` if simple text extraction is used.
+   - Supported types for v0.1 *(widened 2026-08-17 — see amendment below)*:
+     - **Prose and docs:** `.md`, `.markdown`, `.rst`, `.txt`
+     - **Code:** `.py`, `.js`, `.ts`, `.sh`
+     - **Notebooks:** `.ipynb`
+     - **Structured config:** `.json`, `.yml`, `.yaml`, `.toml`, `.cfg`, `.ini`, `.in`
+     - **Template variants:** `.example`, `.template`, `.sample` — a config file committed
+       in placeholder form (`.env.example`, `config.yml.template`) is text by construction
+       and is often the only committed form of that config.
+     - **Recognised extensionless files, matched by exact filename:**
+       `Dockerfile`, `Makefile`, `Rakefile`, `Vagrantfile`, `Procfile`, `Gemfile`,
+       `Pipfile`, `LICENSE`, `LICENCE`, `COPYING`, `NOTICE`, `AUTHORS`, `CONTRIBUTORS`,
+       `README`, `CHANGELOG`, `CODEOWNERS`, `.gitignore`, `.gitattributes`,
+       `.dockerignore`, `.editorconfig`, `.coveragerc`, `.flake8`, `.pylintrc`,
+       `.npmrc`, `.nvmrc`, `.python-version`, `.ruby-version`, `.tool-versions`,
+       `.prettierrc`, `.eslintrc`, `.babelrc`, `.browserslistrc`, `.gitmodules`,
+       `.git-blame-ignore-revs`
    - Skip binaries and junk (e.g., large images, archives, lockfiles, `node_modules`‑style folders).
+   - **`.svg` is skipped as a non‑text asset.** This is a judgement, not an omission: SVG is
+     XML text, so it could be read, but committed SVGs are overwhelmingly machine‑generated
+     export artifacts whose content is path coordinates. That content costs context budget
+     and explains nothing about a repository. Revisit if hand‑authored SVG proves valuable.
+   - **Deliberately not supported in v0.1**, so the exclusion is a decision rather than an
+     oversight:
+     - Source in languages beyond Python/JS/TS (`.go`, `.rs`, `.java`, `.rb`, `.c`, `.cpp`,
+       `.cs`, `.php`, …). Adding them is a scope increase, not a bug fix; a Go repository
+       will legitimately report most of its source as `unsupported_extension` until a later
+       version widens this.
+     - `.csv`, `.tsv`, `.parquet` and similar data files — tabular rows are neither prose nor
+       structure, and a moderately sized CSV consumes context budget without explaining
+       anything.
+     - `.html`, `.css` — presentation, and frequently generated.
+     - `.xml` — dominated by build output and generated descriptors; the genuinely useful
+       cases (`pom.xml`) do not justify pulling in the rest yet.
+
+   #### Amendment — 2026-08-17: supported list widened
+
+   **Trigger.** A live smoke run of the Milestone 3 classifier against `psf/requests`
+   returned **78 skipped of 153 entries, 72 of them `unsupported_extension`**. The skipped
+   set was `.yml`, `.toml`, `.cfg`, `.rst`, `.in` and extensionless dotfiles — all readable
+   text, much of it the repository's configuration and prose. `evals.md` Milestone 3 requires
+   that "no important readable files are accidentally excluded", so the original list failed
+   its own eval on a mainstream Python repository.
+
+   **What changed.** The original list (`.md`, `.markdown`, `.py`, `.ipynb`, `.json`, `.txt`,
+   optionally `.js`/`.ts`) was written for prose, code and notebooks and omitted the
+   configuration layer entirely. It now covers structured config, reStructuredText, shell
+   scripts, template variants, and a closed set of recognised extensionless filenames.
+
+   **What did not change.** The skip rules. Lockfiles, vendored directories, binaries and the
+   size threshold are unaffected — this widened what counts as readable, it did not weaken
+   what counts as junk. `package-lock.json` is still skipped as a lockfile despite `.json`
+   being supported.
+
+   **Why filenames as well as extensions.** `Dockerfile`, `Makefile` and `.gitignore` carry
+   real signal about how a project builds and runs, and none of them has an extension.
+   Matching them by exact name keeps the rule closed and predictable; anything extensionless
+   that is *not* on the list is still skipped, and says so by name.
+
+   #### Amendment — 2026-08-17 (second pass): residue swept
+
+   **Trigger.** After the first amendment, `psf/requests` still reported 23
+   `unsupported_extension` of 153 entries. Enumerating them individually — rather than
+   accepting the count — showed that most were correctly skipped, but a handful were excluded
+   by *omission* rather than by decision. `evals.md` Milestone 3 requires that no important
+   readable file is *accidentally* excluded; accidental is precisely the distinction.
+
+   **Added: `.cnf`.** OpenSSL configuration files (4 in the residue). Plain-text `key = value`
+   config, structurally identical to `.ini` and `.cfg`, both already supported. Excluding it
+   while supporting its near-identical siblings was an oversight.
+
+   **Added: `.bat`.** Windows batch scripts (`docs/make.bat` in the residue). `.sh` is already
+   supported, and `.bat` is its direct counterpart — the same build or documentation command,
+   written for the other platform. Excluding one while supporting the other was **asymmetry,
+   not judgement**: there is no reading of "readable text" under which a shell script is
+   content and a batch script is not. On a Windows-developed repository the `.bat` file may be
+   the *only* committed form of the build entry point.
+
+   **Added: `py.typed` and `.nojekyll`, by filename.** Both are zero-byte marker files whose
+   *existence* is the signal: `py.typed` (PEP 561) declares that a package ships type hints,
+   `.nojekyll` tells GitHub Pages not to run Jekyll. The decision is to **support** them rather
+   than improve their skip message. Classification answers "is this part of the repository's
+   readable inventory?", and for a marker file the answer is yes — a reader scanning the
+   selected list learns something real from seeing `py.typed` there. The cost is one empty
+   file at extraction; the alternative was to skip them under a code reading
+   `unsupported_extension`, which is simply the wrong description of a file that is not
+   unsupported but empty. Matched by exact filename, so the closed set stays tight — a
+   `.typed` extension is *not* broadly supported.
+
+   **Checked and deliberately left skipped.** The remaining residue after this amendment is
+   16 entries, every one of them a decision rather than an omission:
+   - 14 credential-shaped files (`.key` ×4, `.csr` ×3, `.pem` ×3, `.crt`, `.srl`, and two
+     extensionless files named `ca`). These are TLS test fixtures. They stay skipped, and are
+     the subject of the deferred `CREDENTIAL_LIKE` proposal in `plan.md` — the open question
+     is how to name them, not whether to read them.
+   - `.css` and `.html`, already recorded above as deliberately not supported.
+
+   Driving the count to zero was not the goal. The goal was that every remaining exclusion be
+   traceable to a decision written down somewhere.
 
 4. **File content retrieval**
    - For selected files, request contents via GitHub contents APIs.

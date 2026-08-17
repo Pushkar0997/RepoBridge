@@ -214,6 +214,7 @@ Response on success:
 | `tree_entry_count` | entries GitHub returned. Not a total — if `tree_truncated` is true, the repo has more |
 | `tree_truncated` | `true` when GitHub truncated the tree (very large repos) |
 | `tree_error` | `null` on a clean run; otherwise what went wrong, including the truncation warning |
+| `classification` | file classification summary, or `null` if the tree never arrived — see below |
 
 Status codes:
 
@@ -232,6 +233,40 @@ have `branch_or_ref`, and without one you have `metadata.default_branch`, so wha
 been used stays derivable without a third field asserting anything unverified.
 
 GitHub's raw response body is never echoed back.
+
+### The `classification` object
+
+Every file entry GitHub returned is classified into exactly one status, and nothing is
+dropped. Directories are counted separately rather than classified — "will we read this
+file's content?" is not a meaningful question about a directory, and counting them as
+skipped would make the skip totals misleading.
+
+| Field | Meaning |
+|---|---|
+| `total_entries` | every entry in the tree, matching `tree_entry_count` |
+| `directories` | entries of type `tree`, counted not classified |
+| `selected_count` / `skipped_count` / `failed_count` | totals across the **whole** tree |
+| `skipped_count_by_reason` | skip counts grouped by reason code, e.g. `{"non_text_asset": 6, "lockfile": 2}` |
+| `accounts_for_every_entry` | `true` when `directories + selected + skipped + failed == total_entries` |
+| `sample_limit` | the cap applied to the three `*_sample` arrays (50) |
+| `selected_sample` | up to 50 files, each `{path, extension, size}` |
+| `skipped_sample` | up to 50 files, each `{path, reason, message}` |
+| `failed_sample` | up to 50 entries that could not be classified at all |
+
+**`*_count` fields cover everything; `*_sample` arrays are capped.** The counts are the
+source of truth — `kubernetes/kubernetes` returns 37,393 entries and the response does not
+carry them inline.
+
+Skip reasons are a closed set, so consumers can group by them:
+`excluded_directory`, `submodule`, `lockfile`, `non_text_asset`,
+`unsupported_extension`, `too_large`. Every skipped file carries both the code and a
+specific human-readable `message` such as `'node_modules/' is excluded by default`.
+
+`classification` is `null` — not an empty summary — when the tree call failed, since zero
+counts would read as "we looked and found nothing" rather than "we never looked".
+
+Supported types, the skip rules and the thresholds are defined in
+`specs/001-repobridge-v0.1/spec.md` section 7.3.
 
 ### GitHub token
 

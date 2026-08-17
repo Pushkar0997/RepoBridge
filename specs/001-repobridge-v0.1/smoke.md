@@ -43,6 +43,13 @@ Milestone 3.
 | 4 | docs-heavy | `github/docs` |
 | 5 | deeply nested / multi-directory | `kubernetes/kubernetes` |
 | 6 | intentionally nonexistent | `Pushkar0997/definitely-not-a-real-repo-zzz` |
+| 7 | asset-dominated / binary-heavy | `twitter/twemoji` |
+
+`twitter/twemoji` was added for plan.md Milestone 3's "test binary-heavy repos" validation
+item. It qualifies: it is an emoji asset library whose contents are ~7,000 SVG and PNG files
+with a thin shell of build tooling, so `non_text_asset` should be the dominant skip reason by
+a wide margin. It is also large enough (7,413 entries) to stress the accounting identity,
+which is the property most likely to break at scale.
 
 ---
 
@@ -113,6 +120,93 @@ GitHub, two paths the mocked tests only approximate:
   reads — the endpoint is not a reliable accounting source and should not be used for one.
 - **Chunk count, summary quality and diagnostics columns are structurally empty** at this
   milestone, not blank by oversight. They become fillable at Milestones 5, 6 and 7.
+
+### Run 2 — 2026-08-17: file classification (Milestone 3)
+
+- **Date:** 2026-08-17, after Run 1.
+- **Quota:** authenticated, 5000/hour (`REPOBRIDGE_GITHUB_TOKEN` set). Token value never read
+  or logged.
+- **Scope:** classification only. Retrieval behaviour is unchanged from Run 1 and was not
+  re-measured; entry counts match Run 1 exactly, which is itself a retrieval regression check.
+- **Method:** in-process `TestClient` against `POST /api/analyze`, no `branch_or_ref`.
+
+| Repo | Entries | Directories | Selected | Skipped | Failed | Identity holds | Skipped by reason |
+|---|---|---|---|---|---|---|---|
+| `Pushkar0997/quantum-toybox` | 40 | 10 | 30 | 0 | 0 | yes | — |
+| `psf/requests` | 153 | 23 | 100 | 30 | 0 | yes | `non_text_asset: 7`, `unsupported_extension: 23` |
+
+"Identity holds" is `directories + selected + skipped + failed == total_entries`, returned by
+the API as `accounts_for_every_entry`. It was `true` for both repos: no entry vanished.
+
+**Effect of the 2026-08-17 spec amendment.** `psf/requests` was measured twice, before and
+after the supported-extension list was widened:
+
+| | Selected | Skipped | `unsupported_extension` |
+|---|---|---|---|
+| Before amendment | 52 | 78 | 72 |
+| After amendment | 100 | 30 | 23 |
+
+The 49 files recovered were `.yml`, `.toml`, `.cfg`, `.rst`, `.in` and recognised
+extensionless config filenames — the repository's configuration and prose layer, which the
+original list omitted entirely.
+
+**The 23 remaining unsupported on `psf/requests`:** `.key` ×4, `.cnf` ×4, extensionless ×3,
+`.csr` ×3, `.pem` ×3, `.css`, `.html`, `.bat`, `.typed`, `.crt`, `.srl`. Judged in `evals.md`
+under the Milestone 3 recorded verdict; `.cnf` and `.bat` are flagged there as readable text
+excluded by omission rather than decision, which is why that criterion is PARTIAL.
+
+**Notes and limitations**
+
+- **`quantum-toybox` skips nothing at all** — every non-directory entry is a supported type.
+  A clean result, but it exercises no skip path, so it validates selection and the accounting
+  identity rather than the skip rules.
+- **The reason code `binary_extension` was renamed `non_text_asset`** between this run and
+  the previous slice's measurement. Counts were re-verified afterwards and are identical; only
+  the key changed. Any earlier note quoting `binary_extension` refers to the same rule.
+
+---
+
+### Run 3 — 2026-08-17: binary-heavy repo, and the second spec amendment
+
+- **Quota:** authenticated, 5000/hour (`REPOBRIDGE_GITHUB_TOKEN` set). Token never read
+  or logged.
+- **Purpose:** (a) close plan.md Milestone 3's "test binary-heavy repos" validation item with
+  a live asset-dominated repository; (b) re-measure the two Run 2 repos after the second
+  spec.md 7.3 amendment added `.cnf`, `.bat`, `py.typed` and `.nojekyll`.
+
+| Repo | Entries | Dirs | Selected | Skipped | Failed | Identity | Skipped by reason |
+|---|---|---|---|---|---|---|---|
+| `twitter/twemoji` | 7413 | 7 | 17 | 7389 | 0 | **yes** | `non_text_asset: 7378`, `unsupported_extension: 10`, `lockfile: 1` |
+| `Pushkar0997/quantum-toybox` | 40 | 10 | 30 | 0 | 0 | yes | — |
+| `psf/requests` | 153 | 23 | 107 | 23 | 0 | yes | `non_text_asset: 7`, `unsupported_extension: 16` |
+
+**Binary-heavy result.** `twitter/twemoji` retrieved in 2.4 s, untruncated at 7,413 entries.
+`non_text_asset` is the dominant skip reason at **7,378 of 7,389 skips (99.9%)**, which is
+what an SVG/PNG asset library should look like. The accounting identity held at this scale:
+`7 + 17 + 7389 + 0 == 7413`. This was the case most likely to break it, and it did not.
+Selected content is the 17-file build and documentation shell around the assets.
+
+**Effect of the second amendment** on `psf/requests`, measured before and after:
+
+| | Selected | Skipped | `unsupported_extension` |
+|---|---|---|---|
+| Run 2 (after 1st amendment) | 100 | 30 | 23 |
+| Run 3 (after 2nd amendment) | 107 | 23 | 16 |
+
+The 7 recovered are `.cnf` ×4, `docs/make.bat`, `src/requests/py.typed`, `docs/.nojekyll`.
+`quantum-toybox` was unchanged at 30/0, as expected — it contained none of the newly
+supported types.
+
+**The 16 remaining unsupported on `psf/requests`**, every one a recorded decision rather than
+an omission: `.key` ×4, `.csr` ×3, `.pem` ×3, extensionless `ca` ×2, `.crt`, `.srl` — 14
+credential-shaped TLS test fixtures, deferred to the `CREDENTIAL_LIKE` proposal in `plan.md` —
+plus `.css` and `.html`, listed in spec.md 7.3 as deliberately not supported.
+
+**Limitation.** `twemoji` skips almost everything, and `quantum-toybox` skips nothing. Neither
+is a balanced mixed repository; `psf/requests` remains the only live sample exercising several
+skip reasons at once.
+
+---
 
 #### Untested caveat: tree-404 cause attribution (reasoned, not observed)
 

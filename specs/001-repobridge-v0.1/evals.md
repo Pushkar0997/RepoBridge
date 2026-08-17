@@ -268,6 +268,99 @@ Use mixed repositories containing:
 
 ---
 
+### Recorded verdict — 2026-08-17
+
+Judged against the code as it stands. A criterion is PASS only where a test or a recorded
+live result backs it. Test suite at time of judging: **162 passing**. Live results are
+`smoke.md` Run 2.
+
+| Criterion | Source | Verdict | Evidence |
+|---|---|---|---|
+| File classification rules | plan D1 | PASS | `core/selection.py:classify_entry`, nine-step documented precedence |
+| Supported file extension list | plan D2 | PASS | `config.py:SelectionConfig`, from spec.md 7.3 as amended 2026-08-17 |
+| Skip reason schema | plan D3 | PASS | `selection.py:SkipReason`, closed enum of six; `test_every_skip_reason_in_the_enum_is_reachable` proves none is dead |
+| Tests for common repo layouts | plan D4 | PASS | `tests/test_selection.py` (mixed, notebook, binary, vendored, oversized); `smoke.md` Run 2 on two live repos |
+| Markdown, code, notebooks, text, JSON recognised | plan E1 | PASS | `test_supported_extensions_are_selected`; live 30/30 on the notebook-heavy repo |
+| Obvious binaries and junk skipped | plan E2 | PASS | `test_each_skip_reason_fires`; live `non_text_asset: 7` on `psf/requests` |
+| Every skipped file has a reason | plan E3 | PASS | `test_skipped_files_always_carry_a_code_and_a_message` asserts code **and** message on every skip, and that the message is not merely the code restated |
+| Test mixed repos | plan V1 | PASS | `MIXED_TREE` covers 19 entries across every status; `smoke.md` Run 2 |
+| Test notebook-heavy repos | plan V2 | PASS | live: `quantum-toybox`, 30 selected of 40 entries, 10 directories, 0 skipped |
+| Test binary-heavy repos | plan V3 | PASS *(revised, see below)* | `smoke.md` Run 3: `twitter/twemoji`, 7,413 entries, `non_text_asset` 7,378 of 7,389 skips |
+| Confirm no silent file drops | plan V4 | PASS | `accounts_for_every_entry()` (`selection.py`); `test_every_entry_lands_in_exactly_one_status`, `test_counts_sum_to_the_total_entry_count`; live `True` on both repos |
+| Supported files are selected | evals | PASS | as plan E1 |
+| Unsupported files are skipped | evals | PASS | as plan E2 |
+| Skip reasons are present | evals | PASS | as plan E3 |
+| **No important readable files accidentally excluded** | evals | PASS *(revised, see below)* | `smoke.md` Run 3: residue swept to 16, all decided |
+| File classification is consistent | evals | PASS | precedence is fixed and tested in six cases (`test_position_beats_extension`, `test_lockfile_beats_supported_extension`, `test_size_is_checked_last_...`) |
+| Every skipped file has a reason | evals | PASS | as plan E3 |
+| There are no silent omissions | evals | PASS | as plan V4 |
+
+#### "No important readable files accidentally excluded" — judged on `psf/requests`
+
+Measured live: **153 entries, 23 directories, 100 selected, 30 skipped, 0 failed.** The 30
+skips are 7 `non_text_asset` and 23 `unsupported_extension`. Before the 2026-08-17 spec
+amendment the same repository produced 72 `unsupported_extension`; widening the list closed
+49 of them.
+
+The 23 that remain, by extension:
+
+| Extension | Count | Is it "important readable"? |
+|---|---|---|
+| `.key` | 4 | TLS test fixtures — not prose, code or config |
+| `.cnf` | 4 | OpenSSL fixture configs. **Borderline**: readable text config, arguably should be selected |
+| *(extensionless)* | 3 | unrecognised names, correctly skipped by the closed-set rule |
+| `.csr` | 3 | certificate requests — not readable content |
+| `.pem` | 3 | certificates — not readable content |
+| `.crt`, `.srl` | 2 | certificates — not readable content |
+| `.css` | 1 | deliberately unsupported per spec.md 7.3 |
+| `.html` | 1 | deliberately unsupported per spec.md 7.3 |
+| `.bat` | 1 | **Borderline**: a shell script equivalent; `.sh` is supported, `.bat` is not |
+| `.typed` | 1 | PEP 561 marker; its *existence* is the signal, its content is empty |
+
+**This was judged PARTIAL on 23.** Nineteen were correctly skipped or deliberately out of
+scope, but `.cnf`, `.bat` and `py.typed` were excluded by omission rather than decision.
+
+#### Second pass — 2026-08-17: both PARTIALs closed
+
+**"No important readable files accidentally excluded" — now PASS.** The second spec.md 7.3
+amendment added `.cnf` (key=value config, structurally identical to the already-supported
+`.ini`/`.cfg`), `.bat` (the Windows counterpart of the already-supported `.sh` — asymmetry,
+not judgement), and `py.typed` / `.nojekyll` by filename (zero-byte markers whose existence
+is the signal; supporting them was chosen over skipping them under a code that would have
+called them "unsupported" when they are merely empty).
+
+Re-measured live, `smoke.md` Run 3: `psf/requests` moved from 100 selected / 23 unsupported
+to **107 selected / 16 unsupported**. The remaining 16 are each traceable to a written
+decision — 14 credential-shaped TLS fixtures (`.key` ×4, `.csr` ×3, `.pem` ×3, `ca` ×2,
+`.crt`, `.srl`) deferred to the `CREDENTIAL_LIKE` proposal in `plan.md`, plus `.css` and
+`.html`, listed in spec.md 7.3 as deliberately unsupported. The criterion is *accidentally*
+excluded; nothing in the residue is now accidental. Driving the count to zero was never the
+target.
+
+**"Test binary-heavy repos" — now PASS.** `twitter/twemoji` added to the smoke suite and run
+live: 7,413 entries, `non_text_asset` dominant at 7,378 of 7,389 skips (99.9%), retrieved
+untruncated in 2.4 s. The accounting identity held at that scale —
+`7 + 17 + 7389 + 0 == 7413` — which was the property most at risk from a repository this
+size.
+
+#### Milestone 3 status — CLOSED, 2026-08-17
+
+**Every criterion is PASS. Milestone 3 is recorded as closed.**
+
+Caveats carried forward, recorded as notes rather than blockers:
+- No live sample is a *balanced* mixed repository. `twemoji` skips almost everything,
+  `quantum-toybox` skips nothing; `psf/requests` is the only live repo exercising several
+  skip reasons at once.
+- `CREDENTIAL_LIKE` is recorded, not built: the 14 credential-shaped files above are skipped
+  correctly but under a blander reason than they deserve. Deferred with its false-positive
+  question open — it cannot be settled before file content is retrievable (Milestone 5). See
+  `plan.md`, Milestone 3, "Candidate for a later milestone".
+- Directory matching is case-sensitive while filename matching folds. This is a deliberate
+  asymmetry, recorded in `plan.md` under "Recorded decision", because the failure modes are
+  not symmetric: a wrongly folded directory silently removes an entire subtree.
+
+---
+
 ## Milestone 4 – Persistence and tree view evals
 
 Scope moved out of Milestone 2 by the 2026-08-17 amendment in `plan.md`.

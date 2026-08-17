@@ -13,6 +13,7 @@ from repobridge.core.github_client import (
     fetch_repo_tree,
     GitHubClientError,
 )
+from repobridge.core.selection import ClassificationResult, classify_tree
 
 router = APIRouter(prefix="/api", tags=["runs"])
 
@@ -39,6 +40,46 @@ def _status_for(error: GitHubClientError) -> int:
 # How many tree entries to echo back inline. The full tree is not returned in
 # v0.1; this is a preview so callers can sanity-check what was retrieved.
 TREE_PREVIEW_LIMIT = 50
+
+# How many classified files to sample per status. Classification runs over the whole
+# tree, but the response carries aggregates plus a sample: kubernetes/kubernetes has
+# 37,393 entries and nobody wants those inline.
+CLASSIFICATION_SAMPLE_LIMIT = 50
+
+
+def _classification_payload(result: ClassificationResult) -> dict:
+    """
+    Aggregate counts plus a capped sample.
+
+    Field names say which is which: `*_count` covers every entry, `*_sample` is capped
+    at CLASSIFICATION_SAMPLE_LIMIT. The counts, not the samples, are the source of truth.
+    """
+    return {
+        "total_entries": result.total_entries,
+        "directories": result.directories,
+        "selected_count": len(result.selected),
+        "skipped_count": len(result.skipped),
+        "failed_count": len(result.failed),
+        "skipped_count_by_reason": result.counts_by_reason(),
+        "accounts_for_every_entry": result.accounts_for_every_entry(),
+        "sample_limit": CLASSIFICATION_SAMPLE_LIMIT,
+        "selected_sample": [
+            {"path": f.path, "extension": f.extension, "size": f.size}
+            for f in result.selected[:CLASSIFICATION_SAMPLE_LIMIT]
+        ],
+        "skipped_sample": [
+            {
+                "path": f.path,
+                "reason": f.reason.value if f.reason else None,
+                "message": f.message,
+            }
+            for f in result.skipped[:CLASSIFICATION_SAMPLE_LIMIT]
+        ],
+        "failed_sample": [
+            {"path": f.path, "message": f.message}
+            for f in result.failed[:CLASSIFICATION_SAMPLE_LIMIT]
+        ],
+    }
 
 
 @router.post("/analyze", response_class=JSONResponse)
@@ -88,6 +129,9 @@ async def analyze_repo(request: AnalyzeRequest):
     tree_entry_count = 0
     tree_truncated = False
     tree_error: str | None = None
+    # None, not an empty summary: if the tree never arrived there is nothing to
+    # classify, and zero counts would read as "we looked and found nothing".
+    classification: dict | None = None
 
     try:
         tree = await fetch_repo_tree(normalized, attempted_ref)
@@ -124,12 +168,15 @@ async def analyze_repo(request: AnalyzeRequest):
             }
             for entry in entries[:TREE_PREVIEW_LIMIT]
         ]
+        # Classify every entry GitHub returned, not just the previewed ones.
+        classification = _classification_payload(classify_tree(entries))
+
         if tree_truncated:
             # Truncation must never be discoverable only by noticing a boolean.
             tree_error = (
                 "GitHub truncated the tree response for this repository, so the file "
                 f"listing is incomplete. {tree_entry_count} entries were returned; the "
-                "repository contains more."
+                "repository contains more. Classification below covers only those."
             )
 
     # Step 5: build response
@@ -143,6 +190,7 @@ async def analyze_repo(request: AnalyzeRequest):
         "tree_entry_count": tree_entry_count,
         "tree_truncated": tree_truncated,
         "tree_error": tree_error,
+        "classification": classification,
         "metadata": {
             "full_name": metadata.get("full_name"),
             "private": metadata.get("private"),
