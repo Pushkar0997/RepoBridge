@@ -4,8 +4,8 @@ from typing import Any
 
 import httpx
 
-from src.repobridge.config import GitHubConfig, get_github_token
-from src.repobridge.core.input import NormalizedRepoURL
+from repobridge.config import GitHubConfig, get_github_token
+from repobridge.core.input import NormalizedRepoURL
 
 
 class GitHubClientError(Exception):

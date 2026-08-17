@@ -3,12 +3,12 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
-from src.repobridge.core.input import (
+from repobridge.core.input import (
     normalize_github_repo_url,
     RepoURLValidationError,
 )
-from src.repobridge.core.models import AnalyzeRequest
-from src.repobridge.core.github_client import (
+from repobridge.core.models import AnalyzeRequest
+from repobridge.core.github_client import (
     fetch_repo_metadata,
     GitHubClientError,
 )

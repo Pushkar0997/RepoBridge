@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 import logging
 from pathlib import Path
 
-from src.repobridge.api.routes_runs import router as runs_router
+from repobridge.api.routes_runs import router as runs_router
 
 BASE_DIR = Path(__file__).resolve().parent
 

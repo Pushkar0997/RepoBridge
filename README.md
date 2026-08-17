@@ -98,10 +98,16 @@ This is the simplest if you’re used to `requirements.txt`.
    pip install -r requirements.txt
    ```
 
-3. Run the app:
+3. Install RepoBridge itself in editable mode, so the `repobridge` package is importable:
 
    ```bash
-   uvicorn src.repobridge.main:app --reload
+   pip install -e .
+   ```
+
+4. Run the app:
+
+   ```bash
+   uvicorn repobridge.main:app --reload
    ```
 
 ---
@@ -118,10 +124,16 @@ If you prefer not to use `requirements.txt`, you can install directly using the 
    pip install fastapi uvicorn[standard] jinja2 httpx pydantic sqlalchemy aiosqlite pytest pytest-asyncio
    ```
 
-3. Run the app:
+3. Install RepoBridge itself in editable mode, so the `repobridge` package is importable:
 
    ```bash
-   uvicorn src.repobridge.main:app --reload
+   pip install -e .
+   ```
+
+4. Run the app:
+
+   ```bash
+   uvicorn repobridge.main:app --reload
    ```
 
 ---
@@ -135,7 +147,7 @@ Example (conceptual, not required for v0.1):
 ```bash
 # Using uv (if installed)
 uv sync
-uv run uvicorn src.repobridge.main:app --reload
+uv run uvicorn repobridge.main:app --reload
 ```
 
 For now, the classic venv + `requirements.txt` flow is enough. The `pyproject.toml` file is there to support more advanced packaging and tooling later. 

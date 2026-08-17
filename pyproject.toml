@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "repobridge"
 version = "0.1.0"
@@ -23,7 +27,15 @@ dev = [
   "pytest-asyncio>=0.23.0",
 ]
 
-[tool.uvicorn]
-factory = false
-reload = true
-port = 8000
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["repobridge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# "auto" rather than "strict": the GitHub client tests are entirely async, and
+# auto mode collects them without a @pytest.mark.asyncio decorator on every
+# test. (On pytest 9 / pytest-asyncio 1.4 an undecorated async test under
+# strict mode fails loudly rather than being silently skipped, so this is a
+# boilerplate choice, not a safety net.)
+asyncio_mode = "auto"
