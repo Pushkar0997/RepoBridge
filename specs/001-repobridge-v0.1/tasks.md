@@ -39,11 +39,13 @@ Follow the milestones in order. Do not skip ahead unless the spec and plan are u
 - Add configuration for GitHub API base URL and version in `config.py`, allow optional token for authenticated requests.
 - Handle common error cases in `github_client.py`, including repository not found, branch not found, rate limit responses, network errors.
 - Extend `analysis` data model in `models.py` to store repo metadata like owner, name, default branch, and status.
-- Update `routes_runs.py` to trigger metadata and tree retrieval after URL validation, create an analysis run record in the database.
-- Implement persistence for analysis runs in `infra/schemas.py` and `infra/db.py`, save metadata and status.
+- Update `routes_runs.py` to trigger metadata and tree retrieval after URL validation.
 - Write tests in `tests/test_github_client.py` using mocked httpx responses, cover success, not found, and rate limit scenarios.
-- Add a simple tree view in UI, showing path list or nested structure for a completed run, reading from the database.
+- Write tests in `tests/test_api.py` for the analyze endpoint's tree behavior, cover truncation, bad refs, and degraded runs.
 - Run manual smoke tests against a small set of public repos, verify tree correctness and error handling, then commit.
+
+> Persistence of analysis runs and the UI tree view were moved out of this milestone into
+> Milestone 4 by the 2026-08-17 amendment in `plan.md`. They are not dropped; see below.
 
 ---
 
@@ -60,7 +62,21 @@ Follow the milestones in order. Do not skip ahead unless the spec and plan are u
 
 ---
 
-## Milestone 4 – Extraction and normalization
+## Milestone 4 – Persistence and tree view
+
+Moved out of Milestone 2 by the 2026-08-17 amendment in `plan.md`. Placed after file
+selection so there is a real classification result to persist and display.
+
+- Implement persistence for analysis runs in `infra/schemas.py` and `infra/db.py`, save metadata and status.
+- Update `routes_runs.py` to create an analysis run record in the database when an analysis runs.
+- Add a simple tree view in UI, showing path list or nested structure for a completed run, reading from the database.
+- Persist the truncation flag with the run, so a stored tree is never displayed as complete when it was not.
+- Write tests covering run creation, retrieval after restart, and that no token is written to the database.
+- Run manual checks: create a run, restart the app, confirm it is still listed and readable, then commit.
+
+---
+
+## Milestone 5 – Extraction and normalization
 
 - Implement content fetching in `github_client.py`, functions to get raw file contents for selected files via GitHub contents APIs.
 - Add extraction logic in `src/repobridge/core/extraction.py` for markdown, text, code, JSON, and notebooks, produce normalized chunks with source path and type.
@@ -74,7 +90,7 @@ Follow the milestones in order. Do not skip ahead unless the spec and plan are u
 
 ---
 
-## Milestone 5 – Grounded summary generation
+## Milestone 6 – Grounded summary generation
 
 - Implement a summarization service in `src/repobridge/core/summarization.py`, with a function that takes extracted chunks and metadata and returns a summary string.
 - Add configuration in `config.py` for LLM provider selection and API keys, keep keys out of source and logs.
@@ -87,7 +103,7 @@ Follow the milestones in order. Do not skip ahead unless the spec and plan are u
 
 ---
 
-## Milestone 6 – Diagnostics and observability
+## Milestone 7 – Diagnostics and observability
 
 - Implement a diagnostics event model in `models.py`, include run_id, stage, level, message, and metadata.
 - Create helper functions in `src/repobridge/core/diagnostics.py` to record events at key stages, such as URL validation, GitHub calls, classification, extraction, summarization errors.
@@ -100,7 +116,7 @@ Follow the milestones in order. Do not skip ahead unless the spec and plan are u
 
 ---
 
-## Milestone 7 – Local API surface completion
+## Milestone 8 – Local API surface completion
 
 - Review and finalize all API routes under `src/repobridge/api/`, ensure endpoints and paths match what is described in `spec.md` and `plan.md`.
 - Standardize API response schema, include consistent `data` and `error` fields or similar pattern.
@@ -111,7 +127,7 @@ Follow the milestones in order. Do not skip ahead unless the spec and plan are u
 
 ---
 
-## Milestone 8 – Small UI completion
+## Milestone 9 – Small UI completion
 
 - Polish the `index.html` page to include input form and recent runs list.
 - Improve `run_detail.html` to show summary, key stats, direct links to tree and diagnostics views.
@@ -124,7 +140,7 @@ Follow the milestones in order. Do not skip ahead unless the spec and plan are u
 
 ---
 
-## Milestone 9 – Release hardening
+## Milestone 10 – Release hardening
 
 - Review README and update sections like “Running”, “Usage”, and “Scope” to match the implemented v0.1 behavior.
 - Ensure `pyproject.toml` lists all required dependencies and minimal optional extras.

@@ -172,16 +172,88 @@ Anything beyond this is explicitly out of scope until v0.x+ specs say otherwise.
 
 ---
 
-## Running (planned for v0.1)
+## What actually works today
 
-The exact commands will be added once the implementation is in place. The intended workflow is:
+RepoBridge is mid-build. This section describes only what runs right now; everything in
+"Core idea" above is the target, not the current state. Milestones are tracked in
+`specs/001-repobridge-v0.1/plan.md`.
 
-1. Install dependencies via `pip` or `uv` using `pyproject.toml`.
-2. Run the FastAPI app locally (e.g., via `uvicorn repobridge.main:app`).
-3. Open the local web UI in your browser.
-4. Paste a public GitHub repo URL and start an analysis.
-5. Inspect the summary, tree, files, and diagnostics.
-6. Optionally consume results via the local REST API.
+**Working:**
+
+- `GET /health` — returns `{"status": "ok", ...}`.
+- `GET /` — renders the UI shell.
+- `POST /api/analyze` — validates a GitHub URL, fetches repository metadata and the git
+  tree for the resolved ref, and reports what it saw.
+
+**Not built yet:** file selection, content extraction, summaries, diagnostics, SQLite
+persistence (nothing is stored — every call is a fresh lookup), and the endpoints for
+runs/files/chunks/diagnostics.
+
+**The UI form is inert.** `templates/index.html` renders an input form, but
+`static/js/main.js` intercepts submit and shows an alert. It does not call `/api/analyze`.
+Use the API directly until the UI is wired up.
+
+### POST /api/analyze
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/analyze -H "Content-Type: application/json" -d "{\"repo_url\": \"https://github.com/owner/repo\", \"branch_or_ref\": \"main\"}"
+```
+
+Request fields: `repo_url` (required), `branch_or_ref` (optional; defaults to the
+repository's default branch). There is **no** `github_token` request field — see below.
+
+Response on success:
+
+| Field | Meaning |
+|---|---|
+| `repo_url`, `owner`, `name` | the validated and normalized input |
+| `branch_or_ref` | what you asked for, or `null` |
+| `resolved_ref` | the ref GitHub actually answered for. **`null` when the tree call failed** — the field never claims a ref was resolved when it wasn't. On success it is your `branch_or_ref`, else the default branch |
+| `metadata` | `full_name`, `private`, `default_branch`, `description`, `archived`, `fork`, `stargazers_count`, `language` |
+| `tree_preview` | first 50 entries, each `{path, type, size, mode}`. `size` is `null` for directories |
+| `tree_entry_count` | entries GitHub returned. Not a total — if `tree_truncated` is true, the repo has more |
+| `tree_truncated` | `true` when GitHub truncated the tree (very large repos) |
+| `tree_error` | `null` on a clean run; otherwise what went wrong, including the truncation warning |
+
+Status codes:
+
+| Code | When |
+|---|---|
+| 200 | metadata retrieved. The tree may still have failed — check `tree_error` |
+| 400 | the URL is not a valid github.com repository URL |
+| 404 | the repository does not exist, or you named a `branch_or_ref` that does not |
+| 429 | GitHub rate-limited us (primary or secondary); the message includes when it resets |
+| 502 | GitHub was unreachable, or returned a 5xx |
+
+A tree failure that is *not* a bad ref (rate limit, network, upstream 5xx) returns **200**
+with metadata intact, `tree_error` populated, and `resolved_ref` null, rather than failing the
+whole request. There is no separate "attempted ref" field: with an explicit request you already
+have `branch_or_ref`, and without one you have `metadata.default_branch`, so what *would* have
+been used stays derivable without a third field asserting anything unverified.
+
+GitHub's raw response body is never echoed back.
+
+### GitHub token
+
+Optional, and read **only** from the `REPOBRIDGE_GITHUB_TOKEN` environment variable. It
+raises the rate limit from 60 to 5000 requests/hour. Each `/api/analyze` call makes two
+GitHub requests.
+
+```bash
+export REPOBRIDGE_GITHUB_TOKEN=your_token_here
+```
+
+There is deliberately no per-request token field: v0.1 is local-first and single-user, so a
+per-request secret would buy nothing while flowing into persistence, diagnostics, and logs.
+See `specs/001-repobridge-v0.1/spec.md` section 5.
+
+### Tests
+
+```bash
+python -m pytest -v
+```
+
+All GitHub responses in the suite are mocked; the tests never touch the network.
 
 ---
 

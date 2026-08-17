@@ -55,6 +55,10 @@ async def analyze_repo(request: AnalyzeRequest):
       A caller who asked for a specific branch must never receive a 200 implying it exists.
     - Any other tree failure (rate limit, other GitHub errors) is a degraded run -> HTTP 200
       with metadata intact and `tree_error` explaining what did not come through.
+
+    `resolved_ref` is null unless the tree call actually succeeded against that ref. The ref
+    we intended to use is always derivable by the caller as `branch_or_ref` when they supplied
+    one, else `metadata.default_branch`, so no separate "attempted" field is reported.
     """
     # Step 1: validate and normalize URL
     try:
@@ -72,19 +76,21 @@ async def analyze_repo(request: AnalyzeRequest):
             detail={"message": e.message},
         )
 
-    # Step 3: resolve the ref we will actually ask GitHub for.
+    # Step 3: decide which ref to ask GitHub for.
     # Explicit request wins; otherwise fall back to the repo's default branch.
+    # This is what we *attempt*; it is not reported as resolved until GitHub confirms it.
     requested_ref = request.branch_or_ref
-    resolved_ref = requested_ref or metadata.get("default_branch") or "HEAD"
+    attempted_ref = requested_ref or metadata.get("default_branch") or "HEAD"
 
     # Step 4: fetch the tree for that ref
+    resolved_ref: str | None = None
     tree_preview: list[dict] = []
     tree_entry_count = 0
     tree_truncated = False
     tree_error: str | None = None
 
     try:
-        tree = await fetch_repo_tree(normalized, resolved_ref)
+        tree = await fetch_repo_tree(normalized, attempted_ref)
     except GitHubClientError as e:
         if requested_ref and e.status_code == 404:
             # The caller named a ref that does not exist. Do not pretend this succeeded.
@@ -98,8 +104,12 @@ async def analyze_repo(request: AnalyzeRequest):
                 },
             )
         # Metadata succeeded, so report the run as degraded rather than failed.
+        # resolved_ref stays None: we never confirmed the ref exists, and the response
+        # must not assert a resolution that did not happen.
         tree_error = f"Tree retrieval failed: {e.message}"
     else:
+        # GitHub answered for this ref, so it is now genuinely resolved.
+        resolved_ref = attempted_ref
         entries = tree.get("tree") or []
         # Deliberately not called a "total": when GitHub truncates, this is only
         # what the API chose to return.

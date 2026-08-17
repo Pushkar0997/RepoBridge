@@ -172,6 +172,7 @@ def test_rate_limited_tree_returns_200_with_metadata_and_tree_error(install_tran
     # tree did not
     assert body["tree_error"] is not None
     assert "rate limit" in body["tree_error"].lower()
+    assert body["resolved_ref"] is None
     assert body["tree_preview"] == []
     assert body["tree_entry_count"] == 0
     assert body["tree_truncated"] is False
@@ -236,6 +237,8 @@ def test_network_error_on_tree_degrades_to_200(install_transport):
     assert "Could not reach the GitHub API" in body["tree_error"]
     assert body["tree_preview"] == []
     assert body["tree_entry_count"] == 0
+    # the ref was never confirmed, so it is not reported as resolved
+    assert body["resolved_ref"] is None
 
 
 def test_network_error_on_tree_with_explicit_ref_is_not_a_404(install_transport):
@@ -249,7 +252,11 @@ def test_network_error_on_tree_with_explicit_ref_is_not_a_404(install_transport)
     resp = client.post("/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "some-branch"})
 
     assert resp.status_code == 200
-    assert resp.json()["tree_error"] is not None
+    body = resp.json()
+    assert body["tree_error"] is not None
+    assert body["resolved_ref"] is None
+    # the caller can still see what was asked for
+    assert body["branch_or_ref"] == "some-branch"
 
 
 def test_429_rate_limit_on_tree_degrades_to_200(install_transport):
@@ -269,6 +276,124 @@ def test_429_rate_limit_on_tree_degrades_to_200(install_transport):
     assert "rate limit exceeded" in body["tree_error"].lower()
     assert "2030-01-01 00:00:00 UTC" in body["tree_error"]
     assert body["metadata"]["full_name"] == f"{OWNER}/{REPO}"
+    assert body["resolved_ref"] is None
+
+
+# --------------------------------------------------------------------------
+# resolved_ref honesty: it names a ref only when GitHub confirmed that ref
+# --------------------------------------------------------------------------
+
+
+def test_resolved_ref_is_the_ref_used_when_tree_succeeds(install_transport):
+    calls = _install(
+        install_transport, lambda ref: httpx.Response(200, json=_tree_body([_blob("a.py")]))
+    )
+
+    resp = client.post("/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "dev"})
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["resolved_ref"] == "dev"
+    # and it is the ref actually sent to GitHub, not just an echo of the request
+    assert ("tree", "dev") in calls
+
+
+def test_resolved_ref_is_default_branch_when_no_ref_supplied_and_tree_succeeds(install_transport):
+    calls = _install(
+        install_transport, lambda ref: httpx.Response(200, json=_tree_body([_blob("a.py")]))
+    )
+
+    resp = client.post("/api/analyze", json={"repo_url": REPO_URL})
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["branch_or_ref"] is None
+    assert body["resolved_ref"] == METADATA["default_branch"] == "main"
+    assert ("tree", "main") in calls
+
+
+def test_resolved_ref_is_null_on_tree_network_error(install_transport):
+    def responder(ref: str) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    _install(install_transport, responder)
+
+    resp = client.post("/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "main"})
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["resolved_ref"] is None
+    assert body["tree_error"] is not None
+
+
+def test_resolved_ref_is_null_on_tree_rate_limit(install_transport):
+    _install(
+        install_transport,
+        lambda ref: httpx.Response(
+            429, headers={"X-RateLimit-Remaining": "0"}, json={"message": "Too Many Requests"}
+        ),
+    )
+
+    resp = client.post("/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "main"})
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["resolved_ref"] is None
+    assert body["tree_error"] is not None
+
+
+def test_resolved_ref_is_null_on_tree_upstream_5xx(install_transport):
+    _install(install_transport, lambda ref: httpx.Response(500, text="upstream boom"))
+
+    resp = client.post("/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "main"})
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["resolved_ref"] is None
+    assert body["tree_error"] is not None
+
+
+def test_resolved_ref_null_still_leaves_intent_derivable(install_transport):
+    """
+    No separate "attempted ref" field is reported. With an explicit ref the caller reads
+    branch_or_ref; without one, metadata.default_branch. Both survive a tree failure.
+    """
+    _install(install_transport, lambda ref: httpx.Response(500, text="upstream boom"))
+
+    explicit = client.post(
+        "/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "wanted"}
+    ).json()
+    assert explicit["resolved_ref"] is None
+    assert explicit["branch_or_ref"] == "wanted"
+
+    implicit = client.post("/api/analyze", json={"repo_url": REPO_URL}).json()
+    assert implicit["resolved_ref"] is None
+    assert implicit["branch_or_ref"] is None
+    assert implicit["metadata"]["default_branch"] == "main"
+
+
+def test_explicit_bad_ref_still_404_not_a_null_resolved_ref(install_transport):
+    """A bad explicit ref remains an error, not a 200 with resolved_ref null."""
+    _install(install_transport, lambda ref: httpx.Response(404, json={"message": "Not Found"}))
+
+    resp = client.post("/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "nope"})
+
+    assert resp.status_code == 404
+    assert "nope" in resp.json()["detail"]["message"]
+
+
+def test_truncated_tree_still_reports_resolved_ref(install_transport):
+    """Truncation is a partial result for a ref GitHub did answer for."""
+    _install(
+        install_transport,
+        lambda ref: httpx.Response(200, json=_tree_body([_blob("a.py")], truncated=True)),
+    )
+
+    resp = client.post("/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "main"})
+
+    body = resp.json()
+    assert body["resolved_ref"] == "main"
+    assert body["tree_truncated"] is True
 
 
 # --------------------------------------------------------------------------

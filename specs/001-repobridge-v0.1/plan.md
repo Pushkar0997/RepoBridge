@@ -6,6 +6,56 @@ The goal is to build the project in a production-minded way while keeping the sc
 
 ---
 
+## Amendment — 2026-08-17: Milestone 2 scope split
+
+**Trigger.** An audit of the claim "Milestone 2 is complete" found the milestone unclosable
+as written. M2 bundled three separable things — GitHub retrieval, SQLite persistence, and a
+tree view in the UI — so retrieval could be finished while the milestone as a whole stayed
+open indefinitely. It had been half-finished for exactly that reason.
+
+**What moved.** SQLite persistence (`infra/db.py`, `infra/schemas.py`, saving analysis run
+records) and the UI tree view move out of Milestone 2 into a new **Milestone 4 — Persistence
+and tree view**, placed after file selection so there is a real classification result to
+persist and display. Nothing was dropped: the moved criteria reappear intact under
+Milestone 4.
+
+**Where the bundling actually lived.** This plan's Milestone 2 deliverables were already
+retrieval-only; the persistence and UI tasks were in `tasks.md`. The split is therefore a
+removal in `tasks.md` and an addition here.
+
+**What Milestone 2 is now.** Retrieval works, errors are honest, tests prove it.
+
+**Renumbering.** Former Milestones 4–9 shift to 5–10 across `plan.md`, `tasks.md`, and
+`evals.md`. No other document referenced milestones by number.
+
+**Known consequence, recorded not resolved.** Milestone 3 (file selection) still carries a
+task to extend database schemas, which now sits before the persistence milestone. That
+ordering is left as written rather than quietly rewritten; resolve it when Milestone 3 is
+planned.
+
+### Second pass — same date: diagnostics criterion
+
+A closing review of Milestone 2 found one more criterion that could not be satisfied inside
+its own milestone. `evals.md` listed **"Rate-limit conditions are visible in diagnostics"**
+under Milestone 2 success criteria, but Milestone 2 builds no diagnostics subsystem —
+`core/diagnostics.py` is empty until Milestone 7. The criterion was structurally
+unsatisfiable where it sat: retrieval could be complete and correct, and the milestone would
+still not close.
+
+**What moved.** That criterion moves intact into **Milestone 7 — Diagnostics and
+observability**, whose job it actually is. Nothing is weakened: rate-limit visibility is
+still required, and it is still required to be visible in diagnostics. It is now required of
+the milestone that builds them.
+
+**What Milestone 2 keeps.** Rate limits must still be detected and surfaced clearly at the
+point of failure, which they are, in the API response.
+
+**Note on the pattern.** Both passes of this amendment fix the same mistake: a milestone that
+asserted criteria depending on machinery a later milestone builds. Worth checking for when
+planning the remaining milestones.
+
+---
+
 ## Milestone 0 — Project skeleton
 
 ### Goal
@@ -59,24 +109,34 @@ Accept a GitHub repo URL and normalize it into structured owner/repo information
 ## Milestone 2 — GitHub repository retrieval
 
 ### Goal
-Fetch repository metadata and tree structure using official GitHub APIs.
+Fetch repository metadata and tree structure using official GitHub APIs, and report
+failures honestly. Retrieval only — see the 2026-08-17 amendment above.
 
 ### Deliverables
 - GitHub client module.
 - Repo metadata retrieval.
 - Tree retrieval for a valid ref/branch.
 - Rate-limit and not-found error handling.
+- Tests covering success, not-found, rate-limit, and network-failure paths, with GitHub
+  responses mocked rather than live.
 
 ### Expected behavior
 - Public repos can be retrieved.
-- Tree structure is accurate and nested correctly.
-- Errors are surfaced clearly.
-- Analysis continues safely when possible.
+- Tree paths are accurate for the resolved ref.
+- Errors are surfaced clearly, with the status code this API returns reflecting what
+  actually went wrong rather than echoing GitHub's.
+- Analysis continues safely when possible: a tree failure degrades the run rather than
+  failing it, while a ref the caller explicitly named and that does not exist is an error.
+- Incomplete results are labelled as incomplete.
+
+### Not in this milestone
+- SQLite persistence of run records — moved to Milestone 4.
+- UI tree view — moved to Milestone 4.
 
 ### Validation
 - Use a small set of sample public repos for smoke tests.
-- Verify tree completeness.
-- Verify error messages for nonexistent repos.
+- Verify tree completeness, including that GitHub-side truncation is reported.
+- Verify error messages for nonexistent repos and nonexistent refs.
 - Verify rate-limit handling is explicit.
 
 ---
@@ -105,7 +165,37 @@ Classify files into selected, skipped, or failed with reasons.
 
 ---
 
-## Milestone 4 — Extraction and normalization
+## Milestone 4 — Persistence and tree view
+
+Scope moved out of Milestone 2 by the 2026-08-17 amendment. Placed here because a stored
+run is only worth displaying once files have been classified.
+
+### Goal
+Persist analysis runs in SQLite and show the retrieved tree in the UI.
+
+### Deliverables
+- SQLite persistence for analysis runs in `infra/schemas.py` and `infra/db.py`, saving
+  repo metadata and run status.
+- An analysis run record created when `/api/analyze` runs.
+- A simple tree view in the UI, showing the path list or nested structure for a completed
+  run, reading from the database.
+
+### Expected behavior
+- A run survives a restart and can be reopened.
+- Recent runs can be listed.
+- The tree view reflects what was actually retrieved, including whether the listing was
+  truncated by GitHub.
+- No secrets (tokens) are written to the database.
+
+### Validation
+- Create a run, restart the app, confirm the run is still listed and readable.
+- Confirm stored metadata matches what the API returned.
+- Confirm the tree view renders a real retrieved tree, and shows the truncation warning
+  when the stored run was truncated.
+
+---
+
+## Milestone 5 — Extraction and normalization
 
 ### Goal
 Convert selected files into normalized text chunks.
@@ -128,7 +218,7 @@ Convert selected files into normalized text chunks.
 
 ---
 
-## Milestone 5 — Grounded summary generation
+## Milestone 6 — Grounded summary generation
 
 ### Goal
 Generate a summary that is grounded in retrieved content.
@@ -150,7 +240,7 @@ Generate a summary that is grounded in retrieved content.
 
 ---
 
-## Milestone 6 — Diagnostics and observability
+## Milestone 7 — Diagnostics and observability
 
 ### Goal
 Show what happened during the analysis in a clear, inspectable way.
@@ -173,7 +263,7 @@ Show what happened during the analysis in a clear, inspectable way.
 
 ---
 
-## Milestone 7 — Local API surface
+## Milestone 8 — Local API surface
 
 ### Goal
 Expose results through a stable local REST API.
@@ -195,7 +285,7 @@ Expose results through a stable local REST API.
 
 ---
 
-## Milestone 8 — Small UI completion
+## Milestone 9 — Small UI completion
 
 ### Goal
 Make the local UI usable end to end.
@@ -219,7 +309,7 @@ Make the local UI usable end to end.
 
 ---
 
-## Milestone 9 — Release hardening
+## Milestone 10 — Release hardening
 
 ### Goal
 Make v0.1 stable enough to keep iterating on.
