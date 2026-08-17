@@ -6,13 +6,10 @@ from typing import Any
 
 import httpx
 
-from repobridge.config import GitHubConfig, get_github_token
+from repobridge.config import DEFAULT_GITHUB_CONFIG, GitHubConfig, get_github_token
 from repobridge.core.input import NormalizedRepoURL
 
 logger = logging.getLogger(__name__)
-
-# Default config instance. Callers (and tests) can pass their own.
-DEFAULT_CONFIG = GitHubConfig()
 
 
 class GitHubClientError(Exception):
@@ -22,20 +19,29 @@ class GitHubClientError(Exception):
     `status_code` is the HTTP status GitHub returned, or None when the request never
     completed (network error, DNS failure, timeout). Callers use that distinction:
     None means "we could not tell", not "GitHub said no".
+
+    `is_rate_limit` is set explicitly so callers do not have to re-sniff status codes.
+    A 403 may or may not be a rate limit; only this client can tell.
     """
 
-    def __init__(self, message: str, status_code: int | None = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        is_rate_limit: bool = False,
+    ):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+        self.is_rate_limit = is_rate_limit
 
 
-def _build_headers(cfg: GitHubConfig = DEFAULT_CONFIG) -> dict[str, str]:
+def _build_headers(cfg: GitHubConfig = DEFAULT_GITHUB_CONFIG) -> dict[str, str]:
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": cfg.api_version,
     }
-    token = get_github_token()
+    token = get_github_token(cfg)
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
@@ -43,24 +49,42 @@ def _build_headers(cfg: GitHubConfig = DEFAULT_CONFIG) -> dict[str, str]:
 
 def _is_rate_limited(resp: httpx.Response) -> bool:
     """
-    GitHub signals rate limiting with 403 or 429 plus X-RateLimit-Remaining: 0.
-    Matching on the response body text is unreliable, so we do not.
+    GitHub signals rate limiting two different ways:
+
+    - primary limits: 403 or 429 with X-RateLimit-Remaining: 0
+    - secondary limits: 403 with Retry-After, and X-RateLimit-Remaining is NOT 0
+
+    Both must be recognised. Matching on response body text is unreliable, so we
+    match on headers only.
     """
     if resp.status_code not in (403, 429):
         return False
-    return resp.headers.get("X-RateLimit-Remaining") == "0"
+    if resp.headers.get("X-RateLimit-Remaining") == "0":
+        return True
+    return resp.headers.get("Retry-After") is not None
 
 
 def _rate_limit_message(resp: httpx.Response, context: str) -> str:
-    message = f"GitHub API rate limit exceeded while {context}."
+    is_primary = resp.headers.get("X-RateLimit-Remaining") == "0"
+    if is_primary:
+        parts = [f"GitHub API rate limit exceeded while {context}."]
+    else:
+        parts = [f"GitHub secondary rate limit hit while {context}."]
+
+    retry_after = resp.headers.get("Retry-After")
+    if retry_after:
+        parts.append(f"Retry after {retry_after} seconds.")
+
     raw_reset = resp.headers.get("X-RateLimit-Reset")
     if raw_reset:
         try:
             reset_at = datetime.fromtimestamp(int(raw_reset), tz=timezone.utc)
         except (ValueError, OverflowError, OSError):
-            return message
-        return f"{message} The limit resets at {reset_at:%Y-%m-%d %H:%M:%S} UTC."
-    return message
+            pass
+        else:
+            parts.append(f"The limit resets at {reset_at:%Y-%m-%d %H:%M:%S} UTC.")
+
+    return " ".join(parts)
 
 
 async def _get(url: str, *, headers: dict[str, str], timeout: float, context: str) -> httpx.Response:
@@ -93,7 +117,11 @@ def _raise_for_error(resp: httpx.Response, *, context: str, not_found_message: s
         raise GitHubClientError(not_found_message, status_code=404)
 
     if _is_rate_limited(resp):
-        raise GitHubClientError(_rate_limit_message(resp, context), status_code=resp.status_code)
+        raise GitHubClientError(
+            _rate_limit_message(resp, context),
+            status_code=resp.status_code,
+            is_rate_limit=True,
+        )
 
     if resp.status_code >= 400:
         logger.debug(
@@ -106,7 +134,7 @@ def _raise_for_error(resp: httpx.Response, *, context: str, not_found_message: s
 
 
 async def fetch_repo_metadata(
-    normalized: NormalizedRepoURL, cfg: GitHubConfig = DEFAULT_CONFIG
+    normalized: NormalizedRepoURL, cfg: GitHubConfig = DEFAULT_GITHUB_CONFIG
 ) -> dict[str, Any]:
     """
     Fetch basic repository metadata from GitHub REST API.
@@ -131,7 +159,7 @@ async def fetch_repo_metadata(
 async def fetch_repo_tree(
     normalized: NormalizedRepoURL,
     ref: str | None = None,
-    cfg: GitHubConfig = DEFAULT_CONFIG,
+    cfg: GitHubConfig = DEFAULT_GITHUB_CONFIG,
 ) -> dict[str, Any]:
     """
     Fetch the Git tree for the given repo and ref using GitHub's git/tree API.

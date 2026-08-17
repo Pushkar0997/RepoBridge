@@ -13,9 +13,16 @@ class GitHubConfig:
     tree_timeout: float = 15.0
 
 
-def get_github_token() -> str | None:
+# Default config instance. Callers (and tests) can pass their own.
+DEFAULT_GITHUB_CONFIG = GitHubConfig()
+
+
+def get_github_token(cfg: GitHubConfig = DEFAULT_GITHUB_CONFIG) -> str | None:
     """
     Return the GitHub token from environment if set, otherwise None.
     v0.1 keeps this very simple: no secret storage, just an env variable.
+
+    The env var name comes from the supplied config, so injecting a config with a
+    different `token_env_var` actually takes effect.
     """
-    return os.getenv(GitHubConfig().token_env_var)
+    return os.getenv(cfg.token_env_var)

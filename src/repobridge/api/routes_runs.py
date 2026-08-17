@@ -16,6 +16,26 @@ from repobridge.core.github_client import (
 
 router = APIRouter(prefix="/api", tags=["runs"])
 
+
+def _status_for(error: GitHubClientError) -> int:
+    """
+    Map a GitHub failure onto the status *this* API should return.
+
+    GitHub's status code is not automatically ours: an upstream 500 does not mean
+    RepoBridge failed, and a rate limit is not "you are forbidden".
+    """
+    if error.is_rate_limit:
+        return 429
+    if error.status_code is None:
+        # Never reached GitHub at all (network error, DNS, timeout).
+        return 502
+    if error.status_code >= 500:
+        # Upstream is broken; we are the gateway.
+        return 502
+    # Genuine client-side answers from GitHub (404, and 401/403 that are real auth
+    # failures) are meaningful as-is.
+    return error.status_code
+
 # How many tree entries to echo back inline. The full tree is not returned in
 # v0.1; this is a preview so callers can sanity-check what was retrieved.
 TREE_PREVIEW_LIMIT = 50
@@ -48,7 +68,7 @@ async def analyze_repo(request: AnalyzeRequest):
     except GitHubClientError as e:
         # Surface GitHub API errors cleanly
         raise HTTPException(
-            status_code=e.status_code or 502,
+            status_code=_status_for(e),
             detail={"message": e.message},
         )
 

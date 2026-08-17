@@ -1,0 +1,7 @@
+# Normalise line endings so they stop showing up in diffs.
+#
+# The repository already stores LF in the index for every text file; this makes that
+# explicit and machine-independent instead of relying on each developer's
+# core.autocrlf setting. Working-tree endings are still whatever the platform
+# prefers, so nothing is rewritten on checkout.
+* text=auto
