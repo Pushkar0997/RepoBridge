@@ -18,10 +18,15 @@ from repobridge.core.summarization import (
     RETRYABLE_STATUSES,
     SummarizationError,
     _backoff_delay,
-    _call_gemini,
     _daily_quota_id,
     _suggested_delay,
 )
+
+# `_call_gemini` is deliberately NOT imported here. The autouse guard in conftest.py
+# replaces it with a refuser, and importing the name at module load would capture the
+# real function *before* the guard is installed -- so these tests would keep working by
+# accident rather than by permission. They ask for it through `real_provider_call`, which
+# the `transport` fixture below requests on their behalf.
 
 #: Fast config: the delays are asserted, not waited on, but keeping them small also
 #: keeps a stray real sleep from being invisible.
@@ -86,15 +91,16 @@ def _per_minute_quota_body() -> dict:
 
 
 @pytest.fixture
-def transport(monkeypatch):
+def transport(monkeypatch, real_provider_call):
     """
     Install a scripted sequence of responses and record what was sent.
 
-    Returns a dict with `requests` (one entry per attempt) and `sleeps` (the waits the
-    retry loop asked for), so a test can assert both the number of attempts and the
-    schedule between them.
+    Returns a dict with `requests` (one entry per attempt), `sleeps` (the waits the retry
+    loop asked for) and `call` (the real `_call_gemini`, handed over by the opt-in
+    fixture), so a test can assert both the number of attempts and the schedule between
+    them without ever holding a reference the guard cannot see.
     """
-    state: dict = {"requests": [], "sleeps": []}
+    state: dict = {"requests": [], "sleeps": [], "call": real_provider_call}
 
     def install(responses):
         queue = list(responses)
@@ -117,11 +123,11 @@ def transport(monkeypatch):
     return install
 
 
-async def _call(state: dict, cfg: SummarizationConfig = CFG) -> str:
+async def _call(state: dict, cfg: SummarizationConfig = CFG, api_key: str = "key") -> str:
     async def sleep(seconds: float) -> None:
         state["sleeps"].append(seconds)
 
-    return await _call_gemini("a prompt", cfg, "key", sleep=sleep)
+    return await state["call"]("a prompt", cfg, api_key, sleep=sleep)
 
 
 # --------------------------------------------------------------------------
@@ -469,8 +475,5 @@ async def test_the_api_key_is_never_in_a_retried_url(transport):
     secret = "AIzaSyRETRYKEYMUSTNEVERAPPEARINAURL0000"
     state = transport([httpx.Response(503, json={}), httpx.Response(200, json=OK_BODY)])
 
-    async def sleep(seconds: float) -> None:
-        state["sleeps"].append(seconds)
-
-    await _call_gemini("a prompt", CFG, secret, sleep=sleep)
+    await _call(state, api_key=secret)
     assert all(secret not in url for url in state["requests"])

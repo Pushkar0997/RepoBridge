@@ -353,3 +353,76 @@ def test_the_api_key_never_appears_in_the_response(install_transport, provider, 
 
     response = client.post(f"/api/runs/{body['run_id']}/summarize")
     assert SECRET_KEY not in response.text
+
+
+# --------------------------------------------------------------------------
+# the run detail page: the affordance a person actually reaches for
+# --------------------------------------------------------------------------
+
+
+def test_the_page_offers_re_summarising_after_a_provider_error(install_transport, provider):
+    """The case a person hits: the summary failed, everything else is intact."""
+    provider(error=SummarizationError("The summarisation provider returned status 503."))
+    body, _ = _analyze(install_transport)
+
+    page = client.get(f"/runs/{body['run_id']}").text
+
+    assert 'id="resummarise-form"' in page
+    assert "Generate summary from stored content" in page
+    assert f'data-run-id="{body["run_id"]}"' in page
+    # and it says what pressing it costs
+    assert "no GitHub quota" in page
+
+
+def test_the_page_offers_re_summarising_when_no_key_was_configured(install_transport):
+    """No key at analysis time, chunks stored: pressing it after setting one must work."""
+    _install(
+        install_transport,
+        lambda ref: httpx.Response(200, json=_tree_body(_entries())),
+    )
+    body = client.post("/api/analyze", json={"repo_url": REPO_URL}).json()
+    assert body["summary"]["status"] == "not_configured"
+
+    page = client.get(f"/runs/{body['run_id']}").text
+    assert 'id="resummarise-form"' in page
+
+
+def test_the_page_does_not_offer_it_when_the_summary_succeeded(install_transport, provider):
+    provider()
+    body, _ = _analyze(install_transport)
+
+    page = client.get(f"/runs/{body['run_id']}").text
+    assert 'id="resummarise-form"' not in page
+
+
+def test_the_page_does_not_offer_it_when_there_is_nothing_to_summarise(
+    install_transport, provider
+):
+    """
+    A degraded run has no chunks. Offering the button there would promise a summary the
+    endpoint cannot produce -- it would answer `no_content` every time.
+    """
+    provider()
+
+    def responder(ref: str) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    _install(install_transport, responder)
+    run_id = client.post("/api/analyze", json={"repo_url": REPO_URL}).json()["run_id"]
+
+    page = client.get(f"/runs/{run_id}").text
+    assert 'id="resummarise-form"' not in page
+
+
+def test_pressing_it_is_the_endpoint_the_page_names(install_transport, provider):
+    """The page's URL and the working endpoint must not drift apart."""
+    provider(error=SummarizationError("provider down"))
+    body, _ = _analyze(install_transport)
+    run_id = body["run_id"]
+
+    assert f'data-run-id="{run_id}"' in client.get(f"/runs/{run_id}").text
+
+    provider("Recovered.")
+    assert client.post(f"/api/runs/{run_id}/summarize").json()["status"] == "ok"
+    # the button is gone once there is a summary
+    assert 'id="resummarise-form"' not in client.get(f"/runs/{run_id}").text

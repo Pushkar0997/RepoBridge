@@ -467,11 +467,11 @@ async def test_the_api_key_never_appears_in_a_result(monkeypatch):
         assert SECRET_KEY not in haystack
 
 
-async def test_provider_error_does_not_echo_the_response_body(monkeypatch):
+async def test_provider_error_does_not_echo_the_response_body(monkeypatch, real_provider_call):
     """A provider error body can contain the prompt, and the prompt is repository content."""
     import httpx
 
-    from repobridge.core.summarization import _call_gemini
+    _call_gemini = real_provider_call
 
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text=f"upstream error, key={SECRET_KEY}, prompt=SECRET DATA")
@@ -493,10 +493,10 @@ async def test_provider_error_does_not_echo_the_response_body(monkeypatch):
     assert "500" in message
 
 
-async def test_rate_limit_is_reported_without_losing_the_run(monkeypatch):
+async def test_rate_limit_is_reported_without_losing_the_run(monkeypatch, real_provider_call):
     import httpx
 
-    from repobridge.core.summarization import _call_gemini
+    _call_gemini = real_provider_call
 
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, json={"error": {"message": "quota"}})
@@ -514,10 +514,10 @@ async def test_rate_limit_is_reported_without_losing_the_run(monkeypatch):
     assert "the summary can be generated later" in str(excinfo.value).lower()
 
 
-async def test_the_api_key_is_sent_as_a_header_not_a_url_parameter(monkeypatch):
+async def test_the_api_key_is_sent_as_a_header_not_a_url_parameter(monkeypatch, real_provider_call):
     import httpx
 
-    from repobridge.core.summarization import _call_gemini
+    _call_gemini = real_provider_call
 
     seen: dict = {}
 

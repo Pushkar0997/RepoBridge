@@ -586,6 +586,129 @@ Score each summary from 1 to 5 on:
 
 ---
 
+### Recorded verdict — 2026-08-18
+
+Judged against the code as it stands. A criterion is PASS only where a test or a recorded
+live result backs it. Test suite at time of judging: **414 passing**. The live result is
+`smoke.md` Run 7 — **one** summary, on `Pushkar0997/quantum-toybox`, on
+`gemini-3.5-flash-lite`.
+
+**Read the evidence column carefully.** A test can prove what the *inventory* and the
+*prompt* contain, because those are computed before the model is called and are mocked
+end to end. A test cannot prove what the *model wrote*, because in every test the model is
+a stub. Criteria about the prose therefore rest on live results, and there is one.
+
+| Criterion | Source | Verdict | Evidence |
+|---|---|---|---|
+| Summarization service | plan D1 | PASS | `core/summarization.py:summarise`; 100+ tests across four files; live Run 7 returned `status: ok` |
+| Summary prompt/template | plan D2 | PASS | `SYSTEM_INSTRUCTIONS` + `build_prompt`; `test_prompt_states_what_was_read_and_what_was_not`, `test_prompt_includes_chunk_provenance_headers`, `test_prompt_says_nothing_was_missed_when_nothing_was` |
+| Summary result persistence | plan D3 | PASS | `summary_*` columns in `infra/schemas.py`, `storage.persist_summary`; `test_summary_is_persisted_and_readable_via_the_endpoint`; live: stored text, model and provenance all read back identical |
+| Summary describes repo purpose and major structure | plan E1 | PASS | Live: named the repository's purpose ("notebook-first Qiskit playground"), all ten numbered directories by their scheme, and the per-folder README/notebook layout. Checked against the stored inventory: exactly 10 directories, `01_bell_state` … `10_error_correction`, one `README.md` in each |
+| Summary does not invent unseen details | plan E2 | PASS | Live, checked claim by claim against `analysis_chunks` — see the grounding audit below. Zero unsupported claims. Structurally: `build_provenance` is computed from the inventory before the call and cannot be altered by the model |
+| Summary mentions limitations when coverage is sparse | plan E3 | **PARTIAL** | The **mechanism** is fully tested — the shortfall reaches both provenance and prompt for the cap, truncation, budget and read-failure cases (`test_capped_run_discloses_the_cap_in_the_summary`, `test_truncated_tree_is_disclosed_in_the_summary`, `test_token_budget_shortfall_is_disclosed`, `test_read_failures_are_disclosed`). But **no live summary has been generated for a partially-covered run**: Run 7 had `is_partial: false`, `limitations: []`. What the model actually writes when coverage *is* sparse has never been observed |
+| Run summary on known repos | plan V1 | **PARTIAL** | One repository, not "repos". `quantum-toybox` only |
+| Review whether claims are supported by extracted content | plan V2 | PASS | Done mechanically rather than by eye — the grounding audit below queries the stored chunks for every term the summary used |
+| Verify limitation handling | plan V3 | **PARTIAL** | As E3: verified in the inventory and the prompt, not in a live summary |
+| Summary explains the repo purpose | evals | PASS | as plan E1 |
+| Summary mentions major modules or directories when present | evals | PASS | as plan E1; all ten directories accounted for |
+| Summary does not invent unsupported details | evals | PASS | as plan E2 |
+| Summary acknowledges limited coverage when sparse or partially unreadable | evals | **PARTIAL** | as plan E3 |
+| No hallucinated components | evals success | PASS | grounding audit below: every named component exists in the stored content |
+| No summary claims about unseen files | evals success | PASS | The one live summary named nothing outside what was read; nothing was skipped or unread on that run, which also makes it the *weakest possible test* of this criterion — there were no unseen files to claim about |
+| Limitations are clearly stated when needed | evals success | **PARTIAL** | as plan E3. "When needed" has not yet arisen live |
+| Rubric scored across several repos with different structures | evals | **PARTIAL** | Scored for one summary below; the evaluation set asks for several |
+
+#### The grounding audit
+
+Rather than reading the summary and judging it plausible, every substantive claim was
+checked against `analysis_chunks` and `analysis_files` for that run:
+
+| Claim in the summary | Checked against the stored inventory | Result |
+|---|---|---|
+| "ten numbered folders" | `select count(*) … status='directory'` | **10** exactly |
+| "`01_bell_state` and `02_superposition_explorer` through to `10_error_correction`" | stored directory paths | all three exist, and the ten are contiguously numbered |
+| teleportation, Deutsch, Bernstein-Vazirani, Grover, QFT and inverse QFT, QPE with a T-gate, VQE optimizers, bit-flip and phase-flip correction | substring search of stored chunk text | every term present, 2–10 chunks each |
+| "a markdown README" in each folder | `README.md` per directory | **10 of 10** folders have exactly one |
+| "self-contained executable Jupyter notebooks" | chunk types | 115 of 127 chunks are `notebook_code`/`notebook_markdown` |
+| "depend on qiskit, qiskit-aer, and matplotlib as specified in requirements.txt" | stored text of `requirements.txt` | exactly `qiskit`, `qiskit-aer`, `matplotlib` — three named, three present, none invented |
+
+**No unsupported claim was found.** The summary also named *exactly* the three
+dependencies rather than padding with plausible ones, which is the failure mode this
+criterion is really about.
+
+#### Rubric, the one summary scored
+
+| Dimension | Score | Why |
+|---|---|---|
+| Grounding | 5 | Every claim traced to stored content; nothing invented |
+| Coverage | 5 | Purpose, all ten directories, the per-folder structure, and the dependencies |
+| Clarity | 5 | Three paragraphs, plain prose, no headings or padding, as the prompt asks |
+| Honesty | 4 | It opened by stating coverage was complete — accurate, and it did not manufacture a caveat it did not have. Not 5: the case that would earn a 5 is *sparse* coverage stated plainly, and that case has not been run |
+| Usefulness | 5 | A reader deciding whether to open this repository learns what it is, how it is arranged, and what it needs |
+
+**One summary at 4.8/5 is a good result and a small sample.** It is the easiest input in the
+smoke suite: 40 entries, nothing skipped, nothing capped, nothing truncated, complete
+coverage. The rubric exists to be run on harder shapes.
+
+#### What is proven, and what is only mechanised
+
+Worth stating plainly, because the distinction is the whole basis of the PARTIALs above.
+
+**Proven and model-independent.** Provenance is computed from the run's inventory *before*
+the provider is called, travels with the prose, and is stored beside it. Its accuracy does
+not depend on the model behaving, and it is what a reader checks the prose against. Runs
+with no content never reach the provider at all
+(`test_a_run_with_no_chunks_never_calls_the_provider`), so a summary cannot be invented
+from metadata. Both hold regardless of which model is configured or which attempt
+succeeded.
+
+**Mechanised but not observed.** That the *prompt* states the shortfall is tested. That the
+*model writes it down* is not — and cannot be, in a suite where the provider is a stub. One
+live summary exists and it had nothing to disclose.
+
+#### Milestone 6 status — **NOT CLOSED**, 2026-08-18
+
+**Four criteria are PARTIAL and they are the same gap seen four ways: exactly one live
+summary exists, and it was generated for a run with complete coverage.** Every criterion
+about the machinery passes. The criteria about what the model actually writes rest on a
+sample of one, taken on the easiest input available.
+
+This is not rounded up to closed. The specification's own strongest claim — that a summary
+"must acknowledge limitations when coverage is sparse" — has never been observed happening.
+The honest reading is that grounding is *enforced* (provenance, refusal to summarise
+nothing) and *demonstrated once*, on a run with no limitations to acknowledge.
+
+**What closes it**, and it is now cheap — the 2026-08-18 provider amendment moved the
+default to a 500-requests/day model, so this costs 4 requests out of 500 rather than 4 out
+of 20:
+
+1. **A live summary of a capped run.** Set `REPOBRIDGE_MAX_FILES_PER_RUN` low against
+   `psf/requests` (107 selected) and check whether the prose says how much it did not read.
+   This also exercises the read cap live for the first time — a caveat carried since
+   Milestone 5.
+2. **A live summary of a large partially-read repository.** `github/docs` (11,215 selected,
+   200 read) is the real shape of the problem, and the one where an ungrounded summary
+   would be most damaging.
+3. **A live summary of a sparse repository.** `octocat/Hello-World` selects one file; the
+   criterion "say plainly that the content is too sparse to characterise" is otherwise
+   untested against a model.
+4. **A live summary of a code-shaped repository.** Everything so far is notebooks and
+   prose; `psf/requests` at full coverage would score the rubric on a different structure.
+
+Record each in `smoke.md` with the rubric scored, then revise this verdict in a second
+pass — the pattern Milestone 3 used when its two PARTIALs were closed.
+
+**Caveats that would carry forward even once it closes:**
+- **Summary quality is a single-model observation.** Nothing compares `gemini-3.5-flash-lite`
+  against `gemini-3.7-flash`, and the model is now configurable, so a reader may be running
+  a model this verdict never saw.
+- **Truncation disclosure remains mock-only end to end**, as it has since Milestone 2: no
+  repository retrieved so far has been truncated by GitHub.
+- **The token estimate is `chars//4`**, so `tokens_estimated` in any provenance is
+  approximate and is labelled as such in the record itself.
+
+---
+
 ## Milestone 7 – Diagnostics evals
 
 ### What to verify

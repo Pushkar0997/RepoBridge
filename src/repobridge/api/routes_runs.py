@@ -167,8 +167,13 @@ async def analyze_repo(
     Validate the incoming GitHub repo URL, normalize owner/repo, then fetch repository
     metadata and the git tree for the resolved ref.
 
-    v0.1: retrieval, classification, content extraction and persistence. Summarisation is
-    not built yet. The run is stored and its id returned as `run_id`.
+    v0.1: retrieval, classification, content extraction, persistence and summarisation.
+    The run is stored and its id returned as `run_id`.
+
+    Summarisation runs last and cannot fail the request: a provider error, an exhausted
+    quota or a missing key is recorded on the run, which stays `completed`. The summary
+    can be generated afterwards from stored content via
+    `POST /api/runs/{run_id}/summarize`, with no re-fetching.
 
     Reading is capped at `ExtractionConfig.max_files_per_run`; selected files beyond the
     cap are recorded as `not_fetched`, never dropped. See the 2026-08-18 amendment in

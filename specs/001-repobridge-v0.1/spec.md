@@ -61,8 +61,15 @@ Initial use cases:
   request: v0.1 is local-first and single-user, so a per-request secret would buy nothing
   while flowing into persistence, diagnostics, and logs. Kept local and never logged.
 
-- **llm_provider** (string, optional)  
-  Choice of LLM backend for summary generation (e.g., “openrouter”, “groq”). Defaults may be configured locally.
+- **llm_provider** — *not an input. Removed 2026-08-18.*
+  This originally read "(string, optional) Choice of LLM backend for summary generation
+  (e.g. openrouter, groq)". No such request field was ever implemented, and it should not
+  be: the provider and model are **configuration**, read from the environment at call time
+  (`REPOBRIDGE_GEMINI_MODEL`, `REPOBRIDGE_GEMINI_API_KEY`), for the same reason the GitHub
+  token is environment-only — a per-request value flows into persistence, diagnostics and
+  logs, and buys nothing in a local single-user tool. The named examples were also stale:
+  the provider is Google Gemini, and the amendment in section 7.6 records why Groq was
+  rejected.
 
 ---
 

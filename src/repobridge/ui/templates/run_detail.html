@@ -98,6 +98,31 @@
   {% else %}
     <p class="muted">No summary was generated for this run.</p>
   {% endif %}
+
+  {#
+    The recovery affordance. Shown whenever there is stored content but no summary:
+    a provider error, an unconfigured key, or nothing recorded at all.
+
+    Chunks are the precondition, not the run status. A run with no chunks has nothing to
+    summarise and the button would only produce the same `no_content` answer, so offering
+    it would be offering a lie. `chunk_count > 0 and status != 'ok'` is exactly the set of
+    runs where pressing it can change something.
+  #}
+  {% if run.chunk_count and run.summary_status != 'ok' %}
+    <form id="resummarise-form" data-run-id="{{ run.id }}">
+      <button type="submit" id="resummarise-button">Generate summary from stored content</button>
+      <span id="resummarise-status" class="muted small"></span>
+    </form>
+    <p class="muted small">
+      Re-runs summarisation over the {{ run.chunk_count }} chunk{{ '' if run.chunk_count == 1 else 's' }}
+      already stored for this run. Nothing is fetched from GitHub and no file is read
+      again, so this costs one provider request and no GitHub quota.
+    </p>
+    <div class="notice notice-error" id="resummarise-error" hidden>
+      <strong>Still no summary.</strong>
+      <p class="mono" id="resummarise-error-message"></p>
+    </div>
+  {% endif %}
 </section>
 
 <section>
