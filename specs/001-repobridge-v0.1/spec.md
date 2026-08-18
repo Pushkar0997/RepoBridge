@@ -188,10 +188,14 @@ For each analysis run:
 
    #### Amendment — 2026-08-18: LLM provider
 
-   **Decision: Google Gemini via AI Studio, model `gemini-3.7-flash`.** One provider, no
-   adapter abstraction — the provider call is isolated in `core/summarization.py` so
-   generalising later is cheap, but the interface is designed against one real integration
-   rather than guessed at in advance.
+   **Decision: Google Gemini via AI Studio.** One provider, no adapter abstraction — the
+   provider call is isolated in `core/summarization.py` so generalising later is cheap,
+   but the interface is designed against one real integration rather than guessed at in
+   advance.
+
+   The **model** was `gemini-3.7-flash` when this amendment was first written and is now
+   `gemini-3.5-flash-lite`; see the third pass below for why, and for the general rule
+   that the model is configuration, not a decision baked into the code.
 
    **Why not Groq.** Groq's free tier runs at roughly 6,000–12,000 tokens per minute. A
    repository summary prompt exceeds that in a *single request*: `psf/requests` produces
@@ -228,8 +232,75 @@ For each analysis run:
 
    Transient `503 "This model is currently experiencing high demand"` is also common on
    this tier and is not correlated with request size or output limit — verified by
-   repeating identical calls and observing them alternate between 200 and 503. RepoBridge
-   does not retry; a provider failure is recorded and the run survives intact.
+   repeating identical calls and observing them alternate between 200 and 503. A provider
+   failure is recorded and the run survives intact.
+
+   *(Superseded in part by the third pass below: RepoBridge did not retry when this was
+   written, and now does, on 503/500 and per-minute 429 only. The rest stands.)*
+
+   #### Third pass — 2026-08-18: requests per day is the binding constraint
+
+   **Trigger.** The correction above recorded that the free tier limits *requests per
+   day*, but left the model at a quality-tier one whose allowance is **20 per day**. A
+   session then spent an entire day's allowance on diagnostic probing and could not
+   finish its own verification. That is not a discipline failure to be written up and
+   moved past — 20 per day is not enough to develop a feature against, and any process
+   that depends on nobody ever making a mistake will fail again.
+
+   **The measurement.** On this account:
+
+   | Model | Requests/day | Requests/min | Tokens/min |
+   |---|---|---|---|
+   | `gemini-3.7-flash` (quality tier) | **20** | 10 | 250K |
+   | `gemini-3.5-flash-lite` | **500** | 15 | 250K |
+   | `gemini-3.1-flash-lite` | **500** | 15 | 250K |
+
+   Twenty-five times the daily budget **at the same tokens per minute**. The lite tier
+   costs nothing on the axis that actually constrains this project, because that axis was
+   never throughput.
+
+   **Decision 1: the default model is `gemini-3.5-flash-lite`.** Verified by calling it,
+   not by reading `/v1beta/models` — that endpoint is not evidence. It still lists
+   `gemini-2.5-flash`, which returns 404 "no longer available to new users" when called.
+   A model ID is a claim about the listing until a request against it returns 200.
+
+   **Decision 2: the model is configuration.** `REPOBRIDGE_GEMINI_MODEL` overrides it, and
+   is read **at call time** by `get_summarization_config()`, never bound in a default
+   argument. This is not a general preference for configurability: the quota is *per
+   model*, so switching models is the only recovery available when a day's allowance is
+   gone, and a recovery that needs a code edit and a restart is not a recovery. (The same
+   binding mistake froze the Milestone 5 extraction cap at import once already. It is
+   tested here rather than assumed — `test_the_model_is_read_at_call_time_not_bound_at_import`.)
+
+   **Decision 3: bounded retries, and one thing that is never retried.** A summary is now
+   worth retrying because a 503 costs one request out of 500 rather than one out of 20:
+
+   - **Retried:** 503, 500, and per-minute 429. Exponential backoff with equal jitter,
+     capped per-wait and capped in total (`retry_budget_seconds`), honouring `Retry-After`
+     or Google's `RetryInfo` when supplied.
+   - **Never retried:** every other 4xx. A request the provider has rejected as invalid
+     does not become valid by repetition — a wrong model ID 404s identically three times.
+   - **Never retried, and this is the subtle one: a daily-quota 429.** It carries a
+     `RetryInfo` of about 58 seconds, which is *wrong* in the only sense that matters —
+     the allowance does not return until the quota day rolls over, hours later. Honouring
+     it would spend the retry budget against a wall it cannot clear and then fail
+     identically. It is detected from the `QuotaFailure` violation (a `quotaId` or
+     `quotaMetric` naming a per-day quota) and fails immediately, with a message that says
+     the quota is per model and names the environment variable that switches it.
+
+   **Decision 4: a stored run can be re-summarised.** `POST /api/runs/{id}/summarize`
+   re-generates a summary from stored chunks — no GitHub call, no file re-read, provenance
+   recomputed from the stored inventory so the grounding contract in requirement 6 holds
+   identically. Without it, a run whose summary hit a 503 or an exhausted quota is dead:
+   the only recovery would be re-analysing the repository, spending GitHub calls to
+   re-read files RepoBridge already has, to retry the one stage that failed.
+
+   **What this does not change.** Nothing about grounding. Provenance is computed from the
+   inventory before the first attempt, so it is identical whichever attempt succeeds and
+   whichever day the summary is generated. And the rule that **tests never call the
+   provider** is unchanged and now load-bearing: every retry path, every quota shape and
+   every backoff schedule in this amendment is reproduced with mocks and a stubbed clock.
+   Live calls verify; they do not diagnose.
 
    **The trade-off, recorded deliberately: Google's free tier permits using submitted
    prompts to improve their models.** Repository content sent for summarisation may be used

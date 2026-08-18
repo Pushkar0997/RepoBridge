@@ -49,6 +49,10 @@ RUN = {
 }
 
 
+async def _no_sleep(seconds: float) -> None:
+    """Stand-in for asyncio.sleep. Retry tests assert the schedule, never wait on it."""
+
+
 def _provider(text: str = "A grounded summary."):
     async def call(prompt: str) -> str:
         return text
@@ -480,7 +484,8 @@ async def test_provider_error_does_not_echo_the_response_body(monkeypatch):
     monkeypatch.setattr("repobridge.core.summarization.httpx.AsyncClient", _Mocked)
 
     with pytest.raises(SummarizationError) as excinfo:
-        await _call_gemini("a prompt", CFG, SECRET_KEY)
+        # 500 is retryable, so the sleep is stubbed: this test is about the message
+        await _call_gemini("a prompt", CFG, SECRET_KEY, sleep=_no_sleep)
 
     message = str(excinfo.value)
     assert SECRET_KEY not in message
@@ -504,7 +509,7 @@ async def test_rate_limit_is_reported_without_losing_the_run(monkeypatch):
     monkeypatch.setattr("repobridge.core.summarization.httpx.AsyncClient", _Mocked)
 
     with pytest.raises(SummarizationError) as excinfo:
-        await _call_gemini("a prompt", CFG, "key")
+        await _call_gemini("a prompt", CFG, "key", sleep=_no_sleep)
     assert "rate-limited" in str(excinfo.value)
     assert "the summary can be generated later" in str(excinfo.value).lower()
 

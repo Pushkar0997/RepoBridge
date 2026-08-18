@@ -22,12 +22,20 @@ How that is enforced, in order of strength:
 
 The provider call is isolated in `_call_gemini` so a second provider is cheap to add
 later. No adapter abstraction is built yet: one real integration first.
+
+`_call_gemini` retries transient upstream failures (503/500, and per-minute 429s) with
+bounded exponential backoff, and deliberately does *not* retry a daily-quota 429 -- see
+its docstring. Retrying changes nothing about grounding: the provenance is computed
+before the first attempt and is identical whichever attempt succeeds.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import posixpath
+import random
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Sequence
@@ -35,9 +43,9 @@ from typing import Any, Sequence
 import httpx
 
 from repobridge.config import (
-    DEFAULT_SUMMARIZATION_CONFIG,
     SummarizationConfig,
     get_gemini_api_key,
+    get_summarization_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -353,47 +361,115 @@ def build_prompt(
 # --------------------------------------------------------------------------
 
 
-async def _call_gemini(prompt: str, cfg: SummarizationConfig, api_key: str) -> str:
+#: Statuses worth another attempt. 503 is the common one on this tier -- identical
+#: calls alternate between 200 and 503 -- and 500 is an upstream fault. 429 is here
+#: only for the per-minute case; the per-day case is detected and never retried.
+#: Every other 4xx is a request that will not become valid by repeating it.
+RETRYABLE_STATUSES = frozenset({429, 500, 503})
+
+#: A quota id or metric containing this marks a limit that resets at the *quota day*
+#: boundary, not after the `retryDelay` the same response advertises. Measured: a
+#: daily-quota 429 returns `retryDelay: ~58s` while the real reset is hours away.
+_DAILY_QUOTA_MARKER = "perday"
+
+#: Google's quota identifiers are constants like
+#: `GenerateRequestsPerDayPerProjectPerModel-FreeTier`. Anything that does not look
+#: like one is left out of the message rather than echoed: an error body can carry
+#: the prompt back, and the prompt is repository content.
+_QUOTA_ID_SHAPE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+
+
+def _error_details(body: Any) -> list[dict]:
+    """The `error.details` list of a Google API error body, or empty."""
+    if not isinstance(body, dict):
+        return []
+    details = (body.get("error") or {}).get("details")
+    return [d for d in details if isinstance(d, dict)] if isinstance(details, list) else []
+
+
+def _daily_quota_id(body: Any) -> str | None:
     """
-    One request to Gemini's generateContent endpoint.
+    The quota id when this error is a *per-day* quota exhaustion, else None.
 
-    The only place the API key is used. It goes in a header, never a URL or a log, and
-    provider error bodies are reported by status code rather than echoed -- an error body
-    can contain the request, and the request contains repository content.
+    This is the one rate limit that must not be retried. The free tier's daily 429
+    carries a `retryDelay` of about a minute, which is misleading: the allowance does
+    not return until the quota day rolls over, so a retry budget spent against it buys
+    nothing but a later identical failure.
     """
-    url = f"{cfg.api_base_url}/models/{cfg.model}:generateContent"
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": cfg.max_output_tokens},
-    }
+    for detail in _error_details(body):
+        if not str(detail.get("@type", "")).endswith("QuotaFailure"):
+            continue
+        violations = detail.get("violations")
+        if not isinstance(violations, list):
+            continue
+        for violation in violations:
+            if not isinstance(violation, dict):
+                continue
+            quota_id = str(violation.get("quotaId") or "")
+            metric = str(violation.get("quotaMetric") or "")
+            if _DAILY_QUOTA_MARKER in quota_id.lower() or _DAILY_QUOTA_MARKER in metric.lower():
+                return quota_id if _QUOTA_ID_SHAPE.match(quota_id) else "a per-day quota"
+    return None
 
+
+def _seconds_from_duration(raw: Any) -> float | None:
+    """Parse a protobuf duration string such as `58s` or `1.5s`."""
+    text = str(raw or "").strip()
+    if not text.endswith("s"):
+        return None
     try:
-        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
-            resp = await client.post(
-                url,
-                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                json=payload,
-            )
-    except httpx.RequestError as exc:
-        raise SummarizationError(
-            f"Could not reach the summarisation provider ({type(exc).__name__})."
-        ) from exc
+        value = float(text[:-1])
+    except ValueError:
+        return None
+    return value if value >= 0 else None
 
-    if resp.status_code == 429:
-        raise SummarizationError(
-            "The summarisation provider rate-limited this request. The run is stored; "
-            "the summary can be generated later."
-        )
-    if resp.status_code >= 400:
-        # deliberately no body: it can echo the prompt back
-        raise SummarizationError(
-            f"The summarisation provider returned status {resp.status_code}."
-        )
 
+def _suggested_delay(resp: httpx.Response, body: Any) -> float | None:
+    """
+    What the provider asked us to wait, in seconds, or None.
+
+    `Retry-After` wins because it is the HTTP-level contract; Google's `RetryInfo`
+    detail is the fallback. Only the numeric-seconds form of `Retry-After` is read: the
+    HTTP-date form is not worth parsing for a local tool, and falling through to
+    exponential backoff is a safe answer when it appears.
+    """
+    header = resp.headers.get("Retry-After")
+    if header:
+        try:
+            return max(0.0, float(header.strip()))
+        except ValueError:
+            pass
+    for detail in _error_details(body):
+        if str(detail.get("@type", "")).endswith("RetryInfo"):
+            seconds = _seconds_from_duration(detail.get("retryDelay"))
+            if seconds is not None:
+                return seconds
+    return None
+
+
+def _backoff_delay(attempt: int, cfg: SummarizationConfig) -> float:
+    """
+    Exponential backoff with equal jitter, bounded by `retry_max_delay`.
+
+    Equal jitter (half fixed, half random) rather than full jitter: full jitter can
+    return a near-zero wait, which defeats the point of backing off at all when the
+    upstream is briefly overloaded.
+    """
+    ceiling = min(cfg.retry_max_delay, cfg.retry_initial_delay * (2 ** (attempt - 1)))
+    half = ceiling / 2
+    return half + random.uniform(0.0, half)
+
+
+def _decode(resp: httpx.Response) -> Any:
+    """Response JSON, or None. A non-JSON error body is not worth failing over."""
     try:
-        data = resp.json()
-    except ValueError as exc:
-        raise SummarizationError("The summarisation provider returned a non-JSON body.") from exc
+        return resp.json()
+    except ValueError:
+        return None
+
+
+def _text_from_candidates(data: dict) -> str:
+    """The generated text, or a specific error explaining why there is none."""
 
     candidates = data.get("candidates") or []
     if not candidates:
@@ -414,6 +490,125 @@ async def _call_gemini(prompt: str, cfg: SummarizationConfig, api_key: str) -> s
     return text
 
 
+async def _call_gemini(
+    prompt: str,
+    cfg: SummarizationConfig,
+    api_key: str,
+    *,
+    sleep=asyncio.sleep,
+) -> str:
+    """
+    Ask Gemini's generateContent endpoint for a summary, retrying transient failures.
+
+    The only place the API key is used. It goes in a header, never a URL or a log, and
+    provider error bodies are reported by status code rather than echoed -- an error body
+    can contain the request, and the request contains repository content.
+
+    **Retry policy.** At most `cfg.max_attempts` attempts, on 503/500/429 only, with
+    exponential backoff plus jitter, honouring `Retry-After`/`RetryInfo` when the
+    provider supplies one. Two things bound it:
+
+    - **A total wait budget** (`cfg.retry_budget_seconds`). A delay that does not fit in
+      what is left of the budget is not slept at all: the wait would be spent and the
+      request still not attempted within the time the caller has.
+    - **A daily-quota 429 fails immediately.** It advertises a `retryDelay` of about a
+      minute while the real reset is at the quota-day boundary, so retrying it spends
+      the budget against a wall it cannot clear. See `_daily_quota_id`.
+
+    Everything else -- 400, 401, 404 -- fails on the first response. Repeating a request
+    the provider has already rejected as invalid cannot change the answer.
+
+    `sleep` is injectable so tests exercise the schedule without waiting on it.
+    """
+    url = f"{cfg.api_base_url}/models/{cfg.model}:generateContent"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": cfg.max_output_tokens},
+    }
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+
+    attempts = max(1, cfg.max_attempts)
+    budget_left = max(0.0, cfg.retry_budget_seconds)
+    last_error: SummarizationError | None = None
+
+    # One client across attempts: a retry should reuse the connection, not re-handshake.
+    async with httpx.AsyncClient(timeout=cfg.timeout) as client:
+        for attempt in range(1, attempts + 1):
+            try:
+                resp = await client.post(url, headers=headers, json=payload)
+            except httpx.RequestError as exc:
+                # Not retried: this slice covers upstream status codes only, and a
+                # transport failure has not been observed against this provider.
+                raise SummarizationError(
+                    f"Could not reach the summarisation provider ({type(exc).__name__})."
+                ) from exc
+
+            if resp.status_code < 400:
+                data = _decode(resp)
+                if data is None:
+                    raise SummarizationError(
+                        "The summarisation provider returned a non-JSON body."
+                    )
+                return _text_from_candidates(data)
+
+            body = _decode(resp)
+
+            if resp.status_code == 429:
+                quota_id = _daily_quota_id(body)
+                if quota_id:
+                    # fail fast, deliberately: no wait inside one run can clear this
+                    raise SummarizationError(
+                        "The summarisation provider's daily request quota is exhausted "
+                        f"for model '{cfg.model}' ({quota_id}). It does not reset after "
+                        "the retry delay the provider advertises; it resets at the "
+                        "quota-day boundary, so no retry was attempted. The quota is per "
+                        f"model: set {cfg.model_env_var} to another model to continue "
+                        "today. The run and its extracted content are stored, and the "
+                        "summary can be generated later."
+                    )
+                last_error = SummarizationError(
+                    "The summarisation provider rate-limited this request. The run is "
+                    "stored; the summary can be generated later."
+                )
+            else:
+                # deliberately no body: it can echo the prompt back
+                last_error = SummarizationError(
+                    f"The summarisation provider returned status {resp.status_code}."
+                )
+
+            if resp.status_code not in RETRYABLE_STATUSES or attempt == attempts:
+                raise last_error
+
+            delay = min(
+                _suggested_delay(resp, body) or _backoff_delay(attempt, cfg),
+                cfg.retry_max_delay,
+            )
+            if delay > budget_left:
+                logger.warning(
+                    "Not retrying summarisation: a %.1fs wait exceeds the %.1fs left of "
+                    "the retry budget (status %s).",
+                    delay,
+                    budget_left,
+                    resp.status_code,
+                )
+                raise last_error
+
+            budget_left -= delay
+            logger.info(
+                "Summarisation attempt %s/%s returned status %s; retrying in %.1fs.",
+                attempt,
+                attempts,
+                resp.status_code,
+                delay,
+            )
+            await sleep(delay)
+
+    # unreachable: the loop either returns or raises
+    raise last_error or SummarizationError(
+        "The summarisation provider could not be reached."
+    )
+
+
 # --------------------------------------------------------------------------
 # orchestration
 # --------------------------------------------------------------------------
@@ -426,7 +621,7 @@ async def summarise(
     run_summary: dict[str, Any],
     skipped_by_reason: dict[str, int],
     chunks: Sequence[ChunkRef],
-    cfg: SummarizationConfig = DEFAULT_SUMMARIZATION_CONFIG,
+    cfg: SummarizationConfig | None = None,
     call_provider=None,
 ) -> SummaryResult:
     """
@@ -434,10 +629,17 @@ async def summarise(
 
     `call_provider` is injectable so tests never touch the network; it defaults to Gemini.
 
+    `cfg` defaults to `None` rather than to `DEFAULT_SUMMARIZATION_CONFIG`, and is then
+    resolved with `get_summarization_config()`. A default argument is evaluated once at
+    definition time, so binding the default instance here would silently ignore
+    `REPOBRIDGE_GEMINI_MODEL` for any caller that omitted `cfg` -- the same shape of bug
+    that froze the extraction cap at import.
+
     A run with no chunks -- degraded, or nothing extractable -- returns NO_CONTENT without
     calling the provider at all. Summarising from metadata alone is exactly the invention
     this module exists to prevent.
     """
+    cfg = cfg if cfg is not None else get_summarization_config()
     ranked = rank_chunks(chunks)
     included, tokens = select_within_budget(ranked, cfg.max_prompt_tokens)
     provenance = build_provenance(

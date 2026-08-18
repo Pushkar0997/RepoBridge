@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Awaitable, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -56,9 +57,21 @@ TREE_PREVIEW_LIMIT = 50
 # 37,393 entries and nobody wants those inline.
 CLASSIFICATION_SAMPLE_LIMIT = 50
 
-#: Set by tests to inject a summarisation provider. None in production, where
-#: `summarise()` uses Gemini.
-SUMMARY_PROVIDER_OVERRIDE = None
+#: A summarisation provider: given a prompt, return the generated text.
+SummaryProvider = Callable[[str], Awaitable[str]]
+
+
+def get_summary_provider() -> SummaryProvider | None:
+    """
+    The summarisation provider for this request.
+
+    Production returns None, which leaves `summarise()` to call its configured Gemini
+    endpoint. It exists as a dependency, rather than as a module-level variable a test
+    reassigns, so the seam is part of the route's declared interface: a test overrides
+    it with `app.dependency_overrides[get_summary_provider]`, scoped to the app and
+    undone by clearing the mapping, with no mutable global left in production code.
+    """
+    return None
 
 
 def _extraction_payload(result: ExtractionResult | None) -> dict | None:
@@ -146,7 +159,9 @@ def _classification_payload(result: ClassificationResult) -> dict:
 
 @router.post("/analyze", response_class=JSONResponse)
 async def analyze_repo(
-    request: AnalyzeRequest, session: AsyncSession = Depends(get_session)
+    request: AnalyzeRequest,
+    session: AsyncSession = Depends(get_session),
+    provider: SummaryProvider | None = Depends(get_summary_provider),
 ):
     """
     Validate the incoming GitHub repo URL, normalize owner/repo, then fetch repository
@@ -335,7 +350,7 @@ async def analyze_repo(
             for c in (extraction.chunks if extraction else [])
         ],
         cfg=get_summarization_config(),
-        call_provider=SUMMARY_PROVIDER_OVERRIDE,
+        call_provider=provider,
     )
     await storage.persist_summary(session, run_id, summary)
 
@@ -487,4 +502,88 @@ async def get_run_summary(run_id: str, session: AsyncSession = Depends(get_sessi
         "error": run.summary_error,
         "prompt_tokens_estimated": run.summary_prompt_tokens,
         "provenance": json.loads(run.summary_provenance) if run.summary_provenance else None,
+    }
+
+
+async def _summarise_from_storage(
+    session: AsyncSession, run, provider: SummaryProvider | None
+) -> SummaryResult:
+    """
+    Summarise a stored run from its stored inventory alone.
+
+    Nothing here touches GitHub or re-reads a file. The chunks are the ones extraction
+    already stored, and every provenance input is read back from the run row and the
+    entry rows:
+
+    - the counts come from the `analysis_runs` row written when the run was analysed,
+    - `skipped_by_reason` is recomputed from `analysis_files`, the same query the
+      diagnostics view uses,
+    - the chunks come from `analysis_chunks` in their stored order.
+
+    So the grounding contract is identical to the one `/api/analyze` produces: the same
+    `build_provenance` inputs go in, and a summary generated an hour later still
+    describes the reading that actually happened, not a fresh one.
+    """
+    chunks = await storage.chunks_for_summary(session, run.id)
+    return await summarise(
+        repo=f"{run.owner}/{run.name}",
+        metadata={
+            "description": run.description,
+            "language": run.language,
+            "resolved_ref": run.resolved_ref,
+        },
+        run_summary={
+            "tree_entry_count": run.tree_entry_count,
+            "tree_truncated": run.tree_truncated,
+            "selected_count": run.selected_count,
+            "skipped_count": run.skipped_count,
+            "files_read": run.files_read,
+            "files_read_failed": run.files_read_failed,
+            "files_not_fetched": run.files_not_fetched,
+            "read_cap": run.read_cap,
+        },
+        skipped_by_reason=await storage.counts_by_reason(session, run.id),
+        chunks=chunks,
+        cfg=get_summarization_config(),
+        call_provider=provider,
+    )
+
+
+@router.post("/runs/{run_id}/summarize", response_class=JSONResponse)
+async def resummarise_run(
+    run_id: str,
+    session: AsyncSession = Depends(get_session),
+    provider: SummaryProvider | None = Depends(get_summary_provider),
+):
+    """
+    Re-generate the summary for a stored run, without re-fetching anything.
+
+    **Why this exists.** Summarisation is the one stage that fails independently of the
+    work that fed it. A transient provider 503, or a daily quota that ran out between
+    extraction and generation, would otherwise leave a run permanently without a summary
+    -- and the only recovery would be re-analysing the repository, spending GitHub calls
+    to re-read files RepoBridge already has, on a provider quota measured in hundreds of
+    requests per day.
+
+    **What it does not do.** No GitHub call, no file read, no re-classification. The
+    stored chunks are the input, and the stored inventory is the provenance. A summary
+    produced here describes the reading that happened at analysis time, which is the only
+    reading it can honestly describe.
+
+    The result replaces the stored summary. That is the point: the old one was an error
+    or an absence. The previous provenance is replaced along with it, so the pair stays
+    consistent -- prose and provenance are only meaningful together.
+    """
+    run = await storage.get_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
+
+    summary = await _summarise_from_storage(session, run, provider)
+    await storage.persist_summary(session, run_id, summary)
+
+    return {
+        "run_id": run.id,
+        "repo": f"{run.owner}/{run.name}",
+        "run_status": run.status,
+        **_summary_payload(summary),
     }

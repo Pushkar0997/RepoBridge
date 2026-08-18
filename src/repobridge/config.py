@@ -220,9 +220,23 @@ class SummarizationConfig:
     #: The key is read from the environment only -- never a request field, never stored.
     api_key_env_var: str = "REPOBRIDGE_GEMINI_API_KEY"
 
-    #: Verified working 2026-08-18. `gemini-2.5-flash` is still listed by the models
-    #: endpoint but 404s when called, so model IDs must be exercised, not assumed.
-    model: str = "gemini-3.7-flash"
+    #: Default model. `gemini-3.7-flash` was the original choice and works, but the
+    #: free tier gives quality-tier Flash models **20 requests per day**, which is not
+    #: enough to develop against: a handful of checks exhausts the model for the day.
+    #: The lite tier on this account allows 500/day at the same 250K tokens/minute, so
+    #: it is 25x the daily budget for the same throughput. Requests per day is the
+    #: binding constraint on this project -- see the 2026-08-18 amendment in
+    #: spec.md section 7.6.
+    #:
+    #: Model IDs must be *exercised*, not read off the listing endpoint:
+    #: `gemini-2.5-flash` is still listed and 404s when called.
+    model: str = "gemini-3.5-flash-lite"
+
+    #: Env override for the model, read at call time by `get_summarization_config()`.
+    #: The quota is per model, so switching models is the one recovery available when
+    #: a day's allowance is gone -- it must not need a code edit.
+    model_env_var: str = "REPOBRIDGE_GEMINI_MODEL"
+
     api_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     timeout: float = 120.0
 
@@ -236,6 +250,26 @@ class SummarizationConfig:
     #: Cap on generated length.
     max_output_tokens: int = 4096
 
+    # --- retry policy -----------------------------------------------------
+    # `503 "This model is currently experiencing high demand"` is common on the free
+    # tier and is not correlated with request size: identical calls alternate between
+    # 200 and 503. A single 503 should not cost a run its summary when the daily
+    # request allowance is the scarce resource.
+
+    #: Total attempts including the first. 3 means at most two retries.
+    max_attempts: int = 3
+
+    #: First backoff delay, seconds. Doubles per attempt, capped by `retry_max_delay`.
+    retry_initial_delay: float = 1.0
+
+    #: Ceiling on any single wait, seconds.
+    retry_max_delay: float = 16.0
+
+    #: Ceiling on the *total* time spent waiting across all retries, seconds. A wait
+    #: that cannot fit inside what is left of this budget is not attempted at all:
+    #: sleeping against a wall we cannot clear just delays the same failure.
+    retry_budget_seconds: float = 45.0
+
 
 DEFAULT_SUMMARIZATION_CONFIG = SummarizationConfig()
 
@@ -248,13 +282,30 @@ def get_gemini_api_key(cfg: SummarizationConfig = DEFAULT_SUMMARIZATION_CONFIG) 
 def get_summarization_config(
     cfg: SummarizationConfig = DEFAULT_SUMMARIZATION_CONFIG,
 ) -> SummarizationConfig:
-    """Config with the token budget taken from the environment when set."""
+    """
+    Config with the token budget and the model taken from the environment when set.
+
+    Both are read **at call time**, not bound at import or in a default argument. The
+    same mistake froze the extraction cap once already (see `get_extraction_config`):
+    a value bound at definition time cannot be changed without a restart and cannot be
+    tested without reaching into module internals. The model matters more than the cap
+    did -- the daily quota is per model, so switching models is the only recovery from
+    an exhausted day, and it has to work on a live process.
+    """
+    overrides: dict[str, object] = {}
+
     raw = os.getenv(cfg.budget_env_var)
     if raw:
         try:
             value = int(raw)
         except ValueError:
-            return cfg
-        if value > 0:
-            return replace(cfg, max_prompt_tokens=value)
-    return cfg
+            pass
+        else:
+            if value > 0:
+                overrides["max_prompt_tokens"] = value
+
+    model = (os.getenv(cfg.model_env_var) or "").strip()
+    if model:
+        overrides["model"] = model
+
+    return replace(cfg, **overrides) if overrides else cfg

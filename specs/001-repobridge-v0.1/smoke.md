@@ -19,7 +19,7 @@ the answer to "where do we stand". Update it whenever a run is added.
 | `github/docs` | Run 4 | 2026-08-17 | 14901 | 11215 | 2227 | not stored | not read | — | `non_text_asset` (1814) |
 | `twitter/twemoji` | Run 3 | 2026-08-17 | 7413 | 17 | 7389 | not stored | not read | — | `non_text_asset` (7378) |
 | `psf/requests` | Run 6 | 2026-08-18 | 153 | 107 | 23 | 153 | 107 of 107 | 104 | `unsupported_extension` (16) |
-| `Pushkar0997/quantum-toybox` | Run 6 | 2026-08-18 | 40 | 30 | 0 | 40 | 30 of 30 | 127 | — (nothing skipped) |
+| `Pushkar0997/quantum-toybox` | Run 7 | 2026-08-18 | 40 | 30 | 0 | 40 | 30 of 30 | 127 | — (nothing skipped) |
 | `octocat/Hello-World` | Run 4 | 2026-08-17 | 1 | 1 | 0 | not stored | not read | — | — (nothing skipped) |
 | `Pushkar0997/definitely-not-a-real-repo-zzz` | Run 1 | 2026-08-17 | — | — | — | — | — | — | 404 at metadata, as intended |
 
@@ -40,6 +40,7 @@ tree entry has gone unaccounted for in any run, at any scale tried.
 | Run 4 | 2026-08-17 | Classification backfilled for the three Run 1 repos; identity tested at 37,393 entries |
 | Run 5 | 2026-08-18 | Persistence and the UI: runs stored and read back, two-process restart, tree-page scale honesty |
 | Run 6 | 2026-08-18 | Extraction: content read and chunked, notebook flattening verified against source, connection pooling measured |
+| Run 7 | 2026-08-18 | Summarisation on the new default model, through the new re-summarise endpoint; one live provider request |
 
 ---
 
@@ -455,3 +456,61 @@ the actual status and message here.
 
 Judged a cause-attribution weakness rather than mishandling of a ref, which is why the
 "wrong branch/ref handling" failure signal is recorded as eliminated in `evals.md`.
+
+
+---
+
+### Run 7 — 2026-08-18: summarisation on the new default model (Milestone 6, quota slice)
+
+- **Quota, GitHub:** authenticated, 5000/hour (`REPOBRIDGE_GITHUB_TOKEN` set). Token never
+  read or logged.
+- **Quota, Gemini:** **exactly one** generate request was spent, deliberately. The analyse
+  step ran with `REPOBRIDGE_GEMINI_API_KEY` unset, so it stored the run, the files and the
+  chunks and recorded the summary as `not_configured` without reaching the provider; the
+  key was restored only for the single `POST /api/runs/{id}/summarize`.
+- **Purpose:** verify the new default model by calling it (not by reading `/v1beta/models`,
+  which lists models that 404), and exercise the re-summarise endpoint end to end.
+- **Method:** in-process `TestClient` against a scratch database outside the repo.
+
+| Repo | Entries | Dirs | Selected | Read | Chunks | Identity | Summary | Model |
+|---|---|---|---|---|---|---|---|---|
+| `Pushkar0997/quantum-toybox` | 40 | 10 | 30 | 30 of 30 | 127 | yes | `ok` | `gemini-3.5-flash-lite` |
+
+Classification and extraction figures are **identical to Run 6** — 40/10/30/0, 127 chunks,
+both identities `true` — which is the regression check for everything below summarisation.
+
+**The model.** `gemini-3.5-flash-lite` returned HTTP 200 on the first call. That is the
+verification: a model ID is a claim until a request against it succeeds. Prompt was 17,001
+estimated tokens (`chars//4`) against a 120,000 budget, so nothing was dropped.
+
+**The endpoint.** `POST /api/runs/{id}/summarize` produced a summary from stored chunks
+with **no GitHub request** — visible in the request log, which shows no `api.github.com`
+call between the analyse response and the Gemini call other than the `/rate_limit` probe
+this script made itself. The stored summary read back identical in text, model and
+provenance.
+
+**Provenance returned with the prose:**
+
+```
+read 30 of 30 selected files
+sent 127 of 127 extracted chunks
+is_partial: false, limitations: []
+tree_truncated: false, skipped_count: 0, files_not_fetched: 0
+```
+
+The summary opened by stating that coverage was complete, named the ten numbered
+directories, and named `qiskit`, `qiskit-aer` and `matplotlib` from `requirements.txt` —
+every claim checkable against the inventory above.
+
+**Limitations of this run**
+
+- **One repository, one model, one call.** The lite model is verified as *reachable and
+  working*; nothing here compares its summary quality against `gemini-3.7-flash`, and the
+  rubric in `evals.md` has not been scored across several repos.
+- **The daily-quota fast-fail path was not observed live**, by design — provoking it would
+  cost a day's allowance. It is reproduced from a real-shaped 429 body in
+  `tests/test_summarization_retry.py`, along with every retry and backoff path.
+- **`/rate_limit` is still stale**, as Run 1 recorded. It read `used 5, remaining 4995`
+  before and after ~32 real calls. Its figures are not an accounting source and the
+  "calls spent" arithmetic in this run's script is therefore meaningless; the request log
+  is the evidence.

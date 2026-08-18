@@ -1,9 +1,9 @@
 """
 Summarisation through the API and into storage.
 
-The provider is injected via `routes_runs.SUMMARY_PROVIDER_OVERRIDE`, so no test reaches
-the network. The `_no_real_summariser` fixture in conftest.py unsets the key as a second
-guard.
+The provider is injected through FastAPI's `dependency_overrides` on
+`routes_runs.get_summary_provider`, so no test reaches the network. The
+`_no_real_summariser` fixture in conftest.py unsets the key as a second guard.
 
 These tests are about the *grounding contract*: what a summary payload must disclose.
 """
@@ -37,7 +37,12 @@ def _api_database(isolated_database):
 
 @pytest.fixture
 def provider(monkeypatch):
-    """Install a recording provider and return what it saw."""
+    """
+    Install a recording provider and return what it saw.
+
+    The override is registered on the app rather than on module state, and torn down by
+    clearing the mapping -- so a test cannot leave a provider installed for the next one.
+    """
     seen: dict = {}
 
     def install(text="A grounded summary of the repository.", error=None):
@@ -48,10 +53,13 @@ def provider(monkeypatch):
             return text
 
         monkeypatch.setenv("REPOBRIDGE_GEMINI_API_KEY", "test-key")
-        monkeypatch.setattr(routes_runs, "SUMMARY_PROVIDER_OVERRIDE", call)
+        app.dependency_overrides[routes_runs.get_summary_provider] = lambda: call
         return seen
 
-    return install
+    try:
+        yield install
+    finally:
+        app.dependency_overrides.pop(routes_runs.get_summary_provider, None)
 
 
 def _entries():
@@ -287,12 +295,9 @@ def test_missing_key_yields_not_configured_without_failing_the_run(install_trans
 SECRET_KEY = "AIzaSyAPIKEYTHATMUSTNEVERBEPERSISTED0000"
 
 
-def test_the_api_key_is_never_stored_or_returned(install_transport, monkeypatch):
-    async def call(prompt: str) -> str:
-        return "summary text"
-
+def test_the_api_key_is_never_stored_or_returned(install_transport, provider, monkeypatch):
+    provider("summary text")
     monkeypatch.setenv("REPOBRIDGE_GEMINI_API_KEY", SECRET_KEY)
-    monkeypatch.setattr(routes_runs, "SUMMARY_PROVIDER_OVERRIDE", call)
 
     body = _analyze(install_transport)
     run_id = body["run_id"]
