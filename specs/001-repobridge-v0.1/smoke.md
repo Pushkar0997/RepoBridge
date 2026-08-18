@@ -23,6 +23,11 @@ the answer to "where do we stand". Update it whenever a run is added.
 | `octocat/Hello-World` | Run 8 | 2026-08-18 | 1 | 1 | 0 | 1 | 1 of 1 | 1 | — (nothing skipped) |
 | `Pushkar0997/definitely-not-a-real-repo-zzz` | Run 1 | 2026-08-17 | — | — | — | — | — | — | 404 at metadata, as intended |
 
+> **`psf/requests` stays at its Run 8 figures deliberately.** Run 9 re-ran the same
+> repository at a deliberate cap of 20 to test file ranking, so its "files read" is 20 of
+> 107 by design. Recording that as the repository's current state would misreport how
+> RepoBridge behaves by default. Run 9 is in the run log below.
+
 Every repo in the suite has been classified. "Rows stored" reads *not stored* for repos last
 measured before persistence existed (Runs 3 and 4), and "Files read" reads *not read* for repos
 last measured before extraction existed (Runs 3-5) — those figures are still valid, they simply
@@ -42,6 +47,7 @@ tree entry has gone unaccounted for in any run, at any scale tried.
 | Run 6 | 2026-08-18 | Extraction: content read and chunked, notebook flattening verified against source, connection pooling measured |
 | Run 7 | 2026-08-18 | Summarisation on the new default model, through the new re-summarise endpoint; one live provider request |
 | Run 8 | 2026-08-18 | Four summaries chosen to exercise partial coverage; the read cap hit live for the first time; one overgeneralisation found |
+| Run 9 | 2026-08-18 | The Run 8 capped case repeated with rank-ordered file selection; the overgeneralisation is gone |
 
 ---
 
@@ -719,3 +725,131 @@ Notes on the scores that are not 5:
   by GitHub.
 - **No `no_content` or `provider_error` summary was generated live** in this run; both are
   covered by tests and by Run 7's `not_configured` analyse step.
+
+
+---
+
+### Run 9 — 2026-08-18: the same capped case, rank-ordered (the Run 8 finding, fixed)
+
+- **Quota, GitHub:** authenticated, 5000/hour. `/rate_limit` read `used 44, remaining 4956`
+  both before and after — stale again, as in Runs 1, 7 and 8. True cost: 22 calls.
+- **Quota, Gemini:** **one** request, on `gemini-3.5-flash-lite`. No retry was needed; the
+  first attempt returned 200 in 4.5 s.
+- **Purpose:** repeat the Run 8 `capped` case with **only the file ordering changed**, and
+  see whether the summary describes an HTTP library rather than a CI configuration.
+- **Method:** identical to Run 8 — `psf/requests`, `REPOBRIDGE_MAX_FILES_PER_RUN=20`,
+  in-process `TestClient`, scratch database, provider key withheld during analysis and
+  restored only for `POST /api/runs/{id}/summarize`.
+
+#### What the cap chose, before and after
+
+Same repository, same cap, same 107 selected files. The only difference is
+`core/ranking.py:rank_files`, applied in `fetch_and_extract` before the cap splits.
+
+| | Run 8 (tree order) | Run 9 (rank-ordered) |
+|---|---|---|
+| `README.md` | **not read** | **read, first** |
+| `src/requests/` files | **0** | **3** (`__init__.py`, `__version__.py`, `_internal_utils.py`) |
+| `docs/` files | 0 | 4 (`index.rst`, `api.rst`, `dev/contributing.rst`, `requirements.txt`) |
+| `.github/` files | **18 of 20** | **4 of 20** |
+| other | `.coveragerc`, `.git-blame-ignore-revs` | `AUTHORS.rst`, `HISTORY.md`, `ext/LICENSE`, `requirements-dev.txt`, 4 × `tests/` |
+
+The full Run 9 selection, in the order the cap took it:
+
+```
+README.md                      docs/api.rst                 src/requests/__init__.py
+AUTHORS.rst                    docs/dev/contributing.rst    src/requests/__version__.py
+HISTORY.md                     docs/index.rst               src/requests/_internal_utils.py
+requirements-dev.txt           docs/requirements.txt        tests/__init__.py
+ext/LICENSE                    .github/AI_POLICY.md         tests/certs/README.md
+.github/CODE_OF_CONDUCT.md     .github/CONTRIBUTING.md      tests/certs/expired/README.md
+.github/ISSUE_TEMPLATE.md                                   tests/certs/mtls/README.md
+```
+
+#### The summary
+
+> "This repository contains Requests, a simple and elegant HTTP library for Python built for
+> human beings. It allows developers to send HTTP/1.1 requests easily with features like
+> automatic connection pooling and keep-alive, sessions with cookie persistence,
+> browser-style TLS/SSL verification, basic and digest authentication, multipart file
+> uploads, SOCKS proxy support, and automatic content decompression.
+>
+> The repository is organised around a core source directory containing the main Python
+> modules, a documentation directory containing reStructuredText files, and a test suite
+> with testing certificates and configuration. It also includes community and contribution
+> guidelines, an AI usage policy, issue templates, and a detailed release history.
+>
+> Coverage of this repository is partial. Out of 153 total entries and 107 selected text
+> files, only 20 files were read for this analysis, while 87 selected files were skipped due
+> to run limits, alongside non-text assets and unsupported extensions."
+
+**The Run 8 defect is gone.** The phrase "heavily structured around GitHub infrastructure"
+does not appear; neither does "GitHub infrastructure" or "automation" in any form. The
+repository is described as what it is.
+
+Provenance is unchanged in shape from Run 8's capped case — `read 20 of 107 selected files`,
+`is_partial: true`, the same two limitations — because ranking changes *which* 20, never how
+many. `accounts_for_every_selected_file` was `true`: `107 == 20 + 0 + 87`.
+
+#### Mechanical audit
+
+Same method as Runs 7 and 8: the prompt was reconstructed from the database
+(`rank_chunks` + `select_within_budget` are deterministic) and matched the recorded
+`chunks_included` and token count exactly — 20 of 20 chunks, 27,659 tokens.
+
+| Check | Result |
+|---|---|
+| Substantive claims traced to what the model saw | **17 of 17** |
+| Unsupported claims | **none** |
+| Filenames asserted by the summary | **none** — so no risk of naming an unread file |
+| Provenance numbers stated verbatim in the prose | **4 of 4** (153, 107, 20, 87) |
+
+Every feature it lists — connection pooling, keep-alive, cookie-persistent sessions,
+browser-style TLS/SSL verification, basic and digest auth, multipart upload, SOCKS proxies,
+automatic decompression — appears in `README.md`, which the ranking put first and which
+Run 8 never read. It describes `src/requests/` as "a core source directory containing the
+main Python modules" **without naming a module it did not read**, having seen only three of
+them. That restraint is the criterion "no summary claims about unseen files" behaving
+correctly under partial coverage.
+
+Run 8's capped summary stated three of the four provenance figures and omitted the 87;
+Run 9 states all four.
+
+#### One regression, recorded
+
+**The coverage paragraph moved to the end.** In Run 8 it was the opening sentence; here it
+is the closing one. `SYSTEM_INSTRUCTIONS` rule 3 asks for it "near the start", so this is a
+deviation, not a preference. The information is complete and more precise than before, and a
+reader who stops early now gets the ungrounded impression the disclosure exists to prevent.
+Not judged a blocker — the disclosure is present, exact, and in a three-paragraph summary
+the reader will reach it — but it is the single thing most worth watching if summary
+placement is ever tightened.
+
+#### Rubric
+
+| Case | Grounding | Coverage | Clarity | Honesty | Usefulness | Mean |
+|---|---|---|---|---|---|---|
+| Run 8 capped `psf/requests` | 4 | 2 | 5 | 3 | 2 | **3.2** |
+| **Run 9 capped `psf/requests`** | **5** | **4** | **5** | **4** | **5** | **4.6** |
+
+- **Grounding 5** — 17 of 17 claims traced; the tagline now comes from `README.md`, which
+  was read, rather than from the GitHub metadata description as in Run 8.
+- **Coverage 4** — the library, its features, and the top-level layout, from 19% of the
+  files. Not 5 because no specific module is characterised, which is correct behaviour
+  rather than a flaw, but it is still less than a full-coverage reading gives.
+- **Honesty 4** — all four figures exact; docked one for the placement regression above.
+- **Usefulness 5** — a reader learns that this is an HTTP library and what it does.
+
+#### Limitations of this run
+
+- **One repository, one cap, one model.** The ranking is verified live on the case that
+  exposed the defect; `github/docs` at 200 was measured offline against its stored file list
+  (spread across `content`, `src`, `data`, `.github`, root) but was **not** re-summarised
+  live, because that would have cost a request to re-confirm a case that already passed.
+- **Within an area the order is still path-based.** The three `src/requests/` files read are
+  `__init__.py`, `__version__.py` and `_internal_utils.py` — the underscore-first ones, not
+  `api.py` or `sessions.py`. `__init__.py` is a genuinely good pick for a Python package and
+  that is luck, not design.
+- **Equal round-robin over-weights small peripheral areas.** Four `.github/` files and four
+  `tests/` files in a 20-file budget is more than either area deserves, and three of the four
+  `tests/` files are certificate-directory READMEs.

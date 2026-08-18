@@ -129,6 +129,7 @@ For each analysis run:
    - Handle partial failures without aborting the entire run.
    - **Reading is capped per run** (`ExtractionConfig.max_files_per_run`, default 200).
      Selected files beyond the cap are recorded as `not_fetched`, never silently dropped.
+   - **The cap reads a rank-ordered sample, not a prefix of tree order** (amendment below).
 
    #### Amendment — 2026-08-18: retrieval model and the read cap
 
@@ -171,6 +172,42 @@ For each analysis run:
 
    **Revisit (b) if** whole-repository extraction becomes a goal, at which point the per-file
    status model needs redesigning first, not retrofitting.
+
+   #### Amendment — 2026-08-18: the cap is rank-ordered
+
+   **Trigger, and it is a measurement rather than an argument.** The cap originally read the
+   first N selected files in classification order, which is GitHub's tree order, which is
+   roughly alphabetical. `smoke.md` Run 8 capped `psf/requests` at 20 and read **18
+   `.github/` files**; `README.md` and every module of `src/requests/` went unread. The
+   summary generated from that slice was accurate about its own coverage and still described
+   the repository as "heavily structured around GitHub infrastructure and automation" — a
+   claim grounded in every particular and wrong about the project. A cap that decides *which*
+   files are read is therefore not a cost control alone; it decides what the summary can
+   possibly be about.
+
+   **Decision: rank the selected files before applying the cap** (`core/ranking.py:rank_files`,
+   applied in `core/extraction.py`). The ranking reuses the signals already used to order
+   chunks for the prompt — README and orienting documents first, shallower paths before
+   deeper, `docs/` above `.github/` and `tests/`, prose before code — and adds one signal
+   that file ranking needs and chunk ranking does not: **spread across top-level areas**.
+   Chunk ranking orders content already read, so nothing can be missing from its pool; file
+   ranking decides what is read at all, and ranking by signals alone simply concentrated on a
+   different directory (all of `docs/`, still no `src/`). Both stages share the signals from
+   one module so they cannot drift apart.
+
+   **What this does not change.** The accounting identity is untouched, because ranking is a
+   permutation: `selected == read + failed + not_fetched` holds over a different partition of
+   the same set, every unread file still carries `not_fetched` with its reason, and a run
+   under the cap still reads everything. Requirement 6's grounding contract is unchanged —
+   the provenance still reports `read N of M`, and it was already honest about the old
+   behaviour. What changes is that the N are now worth reading.
+
+   **What it still does not solve.** Within an area the order remains the rank key, whose
+   last term is the path, so `src/requests/__init__.py` is read before `api.py` because of
+   the underscore rather than because a package entry point was recognised. Equal
+   round-robin also gives a small peripheral area the same share as a large one — `.github/`
+   receives 36 of 200 slots on `github/docs`. Both are recorded in `core/ranking.py` as
+   measured limitations rather than tuned away without evidence.
 
 5. **Extraction & normalization**
    - Convert markdown files into plain text with basic structure preserved.

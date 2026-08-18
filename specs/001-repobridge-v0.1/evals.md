@@ -799,6 +799,86 @@ what it read from.** Those are different properties and only the first is curren
   waited 16.0 s and succeeded. A daily-quota 429 would have failed fast instead, which is the
   discrimination that matters.
 
+#### Third pass — 2026-08-18: the finding fixed, and Milestone 6 closes
+
+The second pass named one change and one re-run. Both were done. Test suite: **439 passing**
+(+25, all of them for the ranking and the identity under it). The re-run is `smoke.md` Run 9.
+
+**The change.** `core/ranking.py:rank_files`, applied in `core/extraction.py` before the cap
+splits. It reuses the signals already defended for chunk ranking — README and orienting
+documents first, shallower paths, `docs/` above `.github/` and `tests/`, prose before code —
+which now live in one module shared by both stages so they cannot drift apart. It adds one
+signal file ranking needs and chunk ranking does not: **spread across top-level areas**.
+That was not a guess; ranking by the signals alone was measured first and still read zero
+files of `src/requests/` at a cap of 20, having concentrated on `docs/` instead of
+`.github/`. Chunk ranking orders content already read, so nothing can be missing from its
+pool; file ranking decides what is read at all.
+
+**The re-run**, same repository, same cap of 20, only the ordering changed:
+
+| | Run 8 (tree order) | Run 9 (rank-ordered) |
+|---|---|---|
+| `README.md` | not read | read, first |
+| `src/requests/` files read | 0 | 3 |
+| `.github/` files read | 18 of 20 | 4 of 20 |
+| Characterisation | "heavily structured around GitHub infrastructure and automation" | "a simple and elegant HTTP library for Python built for human beings" |
+| Claims traced | 15 of 15 | 17 of 17 |
+| Provenance figures stated in prose | 3 of 4 | **4 of 4** |
+| Rubric mean | 3.2 | **4.6** |
+
+| Criterion | Was | Now | Why |
+|---|---|---|---|
+| **No summary claims about unseen files (evals success)** | **PARTIAL** | **PASS** | The capped summary now describes the repository correctly from 19% of its files, and describes `src/requests/` as "a core source directory containing the main Python modules" **without naming a module it did not read** — having seen three of twelve. Restraint under partial coverage, which is exactly the criterion. "Heavily structured around GitHub infrastructure" appears nowhere; neither does "automation" |
+
+**Every Milestone 6 criterion is now PASS.**
+
+#### Milestone 6 status — **CLOSED**, 2026-08-18
+
+Six live summaries across five repositories and four repository shapes: notebooks, a capped
+code repository, the same repository at full coverage, a 14,903-entry docs site read at
+1.8%, a one-file repository, and the capped case again after the fix. **Sixty-five claims
+checked mechanically against the text the model actually saw. Zero hallucinated files, zero
+hallucinated modules, zero named files that were not read.** Every partially-covered run
+disclosed its coverage with figures from its own provenance.
+
+The two results that carry the most weight, because they are the ones that could not be
+faked by machinery:
+
+- **`octocat/Hello-World`** had no mechanical limitation to lean on — `is_partial: false`,
+  `limitations: []` — and the model still wrote "it is not possible to further characterise
+  the repository or its organisation" rather than padding.
+- **`psf/requests` capped at 20** now describes an HTTP library, and it does so from a
+  sample chosen to be representative rather than alphabetical.
+
+Grounding is enforced structurally — provenance computed from the inventory before the
+provider is called, no summary from a run with no content — and demonstrated live across
+six summaries. **Both properties the second pass separated are now earned: the summaries are
+honest about how much they read, and a capped summary is representative of what it read
+from.**
+
+**What closing does not claim.** These are recorded as notes, not blockers, and each is
+measured rather than suspected:
+
+- **One model.** All six live summaries are `gemini-3.5-flash-lite`. Nothing compares
+  against `gemini-3.7-flash`, and the model is configurable.
+- **The coverage paragraph moved to the end in Run 9**, where `SYSTEM_INSTRUCTIONS` rule 3
+  asks for it near the start. Complete and exact, but a reader who stops early misses it.
+  The single thing most worth watching.
+- **Within an area, file order is still the path.** `src/requests/__init__.py` is read
+  before `api.py` because of the underscore. It is a good pick for a Python package by luck,
+  not because entry points are recognised.
+- **Equal round-robin over-weights small peripheral areas** — 4 of 20 slots to `.github/`
+  on `psf/requests`, 36 of 200 on `github/docs`. Equal shares were chosen because there is
+  no measurement to justify a weighting.
+- **`github/docs` was not re-summarised after the ranking change.** Its new file selection
+  was measured offline against the stored list and spreads across `content`, `src`, `data`
+  and root; spending a request to re-confirm a case that already passed was not justified.
+- **Truncation disclosure remains mock-only**, as since Milestone 2.
+- **The token estimate is `chars//4`**, labelled as a heuristic in every provenance record.
+
+This also closes the Milestone 5 open item "which 200 files a capped run reads", which is
+marked resolved in `plan.md` with the measurement that decided it.
+
 ---
 
 ## Milestone 7 – Diagnostics evals

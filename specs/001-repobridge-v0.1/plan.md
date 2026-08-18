@@ -280,9 +280,11 @@ Convert selected files into normalized text chunks.
 
 ---
 
-## Milestone 5 — open item: which 200 files a capped run reads
+## Milestone 5 — open item: which 200 files a capped run reads — **RESOLVED 2026-08-18**
 
 **Recorded 2026-08-18. Not a defect in Milestone 5; a ranking question for Milestone 6.**
+**Resolved the same day, by measurement rather than by argument — see the resolution at
+the end of this section.**
 
 The read cap (`ExtractionConfig.max_files_per_run`, default 200) takes the *first* N
 selected files. Selection order is classification order, which is GitHub's tree order,
@@ -304,6 +306,53 @@ large repository would be grounded in the wrong 2%. Options to weigh then:
 
 Whatever is chosen, the honesty rule stands: the run must keep saying how many of how many
 it read, and unread files must keep their `not_fetched` status.
+
+### Resolution — 2026-08-18
+
+**This was not decided on the reasoning above. It was decided by a live run that showed the
+predicted failure actually happening**, which is worth more than the four options were.
+
+`smoke.md` Run 8 capped `psf/requests` at 20 files. Tree order gave it **18 `.github/`
+files** plus `.coveragerc` and `.git-blame-ignore-revs`; `README.md` and every module of
+`src/requests/` were `not_fetched`. The summary generated from that slice disclosed its
+coverage accurately and then described the project as *"heavily structured around GitHub
+infrastructure and automation"* — grounded in every particular, and wrong about the
+repository. The prediction in this section, that a capped run would be "grounded in the
+wrong 2%", is confirmed.
+
+**What was implemented:** `core/ranking.py:rank_files`, applied in
+`core/extraction.py:fetch_and_extract` before the cap splits. It reuses the ranking signals
+already defended for chunk selection — README and orienting documents first, shallower
+paths, `docs/` above `.github/` and `tests/`, prose before code — which now live in
+`core/ranking.py` and are shared by both stages so they cannot drift apart.
+
+**The four options weighed above, resolved:** options 1 and 2 (rank by depth/name and by
+directory importance) are what the shared signals do. Option 3 (rank by file size) was
+rejected for the same reason `rank_chunks` rejects it: a large file is not a more
+explanatory one. **Option 4 (sample across directories) turned out to be necessary, not
+optional**, and is the one thing file ranking needs that chunk ranking does not:
+
+> Ranking by signals alone still read README plus the whole of `docs/` and **zero** files of
+> `src/requests/` at a cap of 20 — a different concentration, not a fixed one. `rank_chunks`
+> orders content already read, so every area is in the pool and a pure sort only decides
+> what comes first; `rank_files` decides what is read at all, and an area the cap never
+> reaches is absent from the summary's evidence entirely. So `rank_files` round-robins
+> across top-level areas after ranking.
+
+**The honesty rule is untouched, and now tested as such.** Ranking is a permutation:
+`selected == read + failed + not_fetched` holds over a different partition of the same set,
+a run under the cap reads everything regardless of order, and every unread file still
+carries `not_fetched` with its reason (`tests/test_ranking.py`).
+
+**Measured effect**, `psf/requests` at a cap of 20:
+
+| Ordering | README | `src/requests/` files | `.github/` files |
+|---|---|---|---|
+| Tree order (shipped until now) | not read | 0 | 18 of 20 |
+| Signals only | read | 0 | 1 |
+| Signals + area spread (implemented) | read, first | 3 | 4 |
+
+Verified live in `smoke.md` Run 9.
 
 ---
 

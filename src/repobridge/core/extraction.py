@@ -25,6 +25,7 @@ from enum import Enum
 from typing import Awaitable, Callable, Sequence
 
 from repobridge.config import DEFAULT_EXTRACTION_CONFIG, ExtractionConfig
+from repobridge.core.ranking import rank_files
 
 
 class ChunkType(str, Enum):
@@ -239,14 +240,27 @@ async def fetch_and_extract(
     that file and the run continues. Files past the cap are recorded as `not_fetched`
     with a reason, never dropped: the caller must be able to say "read 200 of 11,215".
 
+    **Which files the cap reads is decided by `rank_files`, not by tree order.** Until
+    2026-08-18 this took a prefix of classification order, which is GitHub's tree order,
+    which is roughly alphabetical -- so a capped `psf/requests` read 18 `.github/` files
+    and neither the README nor a single module of `src/requests/`, and the resulting
+    summary described the project as "heavily structured around GitHub infrastructure".
+    That is `smoke.md` Run 8, and it is the measurement this ordering exists to answer.
+
+    Ranking is a permutation, so the accounting identity is untouched:
+    `selected == read + failed + not_fetched` holds exactly as before, over a different
+    partition of the same set. A run under the cap reads everything either way; ranking
+    only decides the order in which it does.
+
     Reads run concurrently, bounded by `cfg.max_concurrent_reads`. Error isolation is
     per-file and unchanged: `read_one` never raises, so one failure cannot cancel the
     others, and the identity still holds.
     """
     result = ExtractionResult(selected_total=len(selected_paths), cap=cfg.max_files_per_run)
 
-    to_read = list(selected_paths[: cfg.max_files_per_run])
-    beyond_cap = list(selected_paths[cfg.max_files_per_run :])
+    by_rank = rank_files(selected_paths)
+    to_read = by_rank[: cfg.max_files_per_run]
+    beyond_cap = by_rank[cfg.max_files_per_run :]
 
     # Bounded concurrency. Unbounded gather over 200 files would hammer GitHub and is
     # what actually trips secondary rate limits; the semaphore keeps at most

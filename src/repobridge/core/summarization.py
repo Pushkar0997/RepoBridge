@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import posixpath
 import random
 import re
 from dataclasses import dataclass, field
@@ -47,6 +46,7 @@ from repobridge.config import (
     get_gemini_api_key,
     get_summarization_config,
 )
+from repobridge.core.ranking import path_rank_key
 
 logger = logging.getLogger(__name__)
 
@@ -101,27 +101,6 @@ class SummaryResult:
 # ranking
 # --------------------------------------------------------------------------
 
-#: Filenames that describe a repository to a newcomer, most explanatory first.
-_ORIENTING_NAMES = (
-    "readme",
-    "index",
-    "overview",
-    "introduction",
-    "getting-started",
-    "getting_started",
-    "architecture",
-    "design",
-    "contributing",
-    "changelog",
-)
-
-#: Directories whose content explains the project, rather than supporting it.
-_EXPLANATORY_DIRECTORIES = ("docs", "doc", "documentation", "guides", "examples")
-
-#: Directories that exist for tooling or process, not for explaining the project.
-_PERIPHERAL_DIRECTORIES = (".github", ".circleci", ".azure", "ci", "scripts", "tests", "test")
-
-
 def rank_chunks(chunks: Sequence[ChunkRef]) -> list[ChunkRef]:
     """
     Order chunks by how much they explain the repository.
@@ -148,39 +127,21 @@ def rank_chunks(chunks: Sequence[ChunkRef]) -> list[ChunkRef]:
 
     Deliberately *not* ranked by file size: a large file is not a more explanatory one, and
     size-ranking would promote generated data over a hand-written README.
+
+    Signals 1-4 live in `core/ranking.py` and are shared with `rank_files`, which orders
+    what a capped run *reads*. The two stages must agree about what explains a repository;
+    keeping two copies of these rules was how they would come to disagree.
+
+    The one signal derived differently here: prose-ness comes from the chunk's own type, so
+    a notebook's markdown cells rank above its code cells. `rank_files` has only the
+    extension to go on, because the file has not been read yet.
     """
+    prose_types = {"markdown", "notebook_markdown", "text"}
 
     def sort_key(chunk: ChunkRef) -> tuple:
-        path = chunk.source_path
-        lowered = path.lower()
-        segments = lowered.split("/")
-        depth = len(segments) - 1
-        stem = posixpath.splitext(segments[-1])[0]
-
-        orienting = next(
-            (i for i, name in enumerate(_ORIENTING_NAMES) if stem.startswith(name)),
-            len(_ORIENTING_NAMES),
-        )
-        # a root README outranks a nested one
-        orienting_rank = orienting if orienting < len(_ORIENTING_NAMES) else 99
-
-        directory_rank = 1  # ordinary source
-        if any(seg in _EXPLANATORY_DIRECTORIES for seg in segments[:-1]):
-            directory_rank = 0
-        elif any(seg in _PERIPHERAL_DIRECTORIES for seg in segments[:-1]):
-            directory_rank = 2
-
-        is_prose = 0 if chunk.chunk_type in {"markdown", "notebook_markdown", "text"} else 1
-
-        return (
-            orienting_rank,
-            depth if orienting_rank < 99 else 0,  # among orienting files, prefer shallow
-            directory_rank,
-            depth,
-            is_prose,
-            path,
-            chunk.chunk_index,
-        )
+        return path_rank_key(
+            chunk.source_path, is_prose=chunk.chunk_type in prose_types
+        ) + (chunk.chunk_index,)
 
     return sorted(chunks, key=sort_key)
 
