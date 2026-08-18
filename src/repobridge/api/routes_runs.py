@@ -8,8 +8,12 @@ from repobridge.core.input import (
     normalize_github_repo_url,
     RepoURLValidationError,
 )
+from repobridge.config import get_extraction_config
 from repobridge.core.models import AnalyzeRequest
+from repobridge.core.extraction import ExtractionResult, fetch_and_extract
 from repobridge.core.github_client import (
+    fetch_file_content,
+    open_client,
     fetch_repo_metadata,
     fetch_repo_tree,
     GitHubClientError,
@@ -48,6 +52,37 @@ TREE_PREVIEW_LIMIT = 50
 # tree, but the response carries aggregates plus a sample: kubernetes/kubernetes has
 # 37,393 entries and nobody wants those inline.
 CLASSIFICATION_SAMPLE_LIMIT = 50
+
+
+def _extraction_payload(result: ExtractionResult | None) -> dict | None:
+    """
+    Aggregates plus a capped sample, same contract as `_classification_payload`.
+
+    `read_of_selected` is the honesty field: a capped run must say "read 200 of 11,215"
+    as plainly as the tree page says "showing 100 of 37,393".
+    """
+    if result is None:
+        return None
+    return {
+        "selected_total": result.selected_total,
+        "files_read": len(result.read),
+        "files_failed": len(result.failed),
+        "files_not_fetched": len(result.not_fetched),
+        "read_cap": result.cap,
+        "cap_applied": result.cap_applied,
+        "read_of_selected": f"read {len(result.read)} of {result.selected_total} selected files",
+        "accounts_for_every_selected_file": result.accounts_for_every_selected_file(),
+        "chunk_count": len(result.chunks),
+        "sample_limit": CLASSIFICATION_SAMPLE_LIMIT,
+        "failed_sample": [
+            {"path": f.path, "error": f.error}
+            for f in result.failed[:CLASSIFICATION_SAMPLE_LIMIT]
+        ],
+        "not_fetched_sample": [
+            {"path": f.path, "error": f.error}
+            for f in result.not_fetched[:CLASSIFICATION_SAMPLE_LIMIT]
+        ],
+    }
 
 
 def _classification_payload(result: ClassificationResult) -> dict:
@@ -93,8 +128,12 @@ async def analyze_repo(
     Validate the incoming GitHub repo URL, normalize owner/repo, then fetch repository
     metadata and the git tree for the resolved ref.
 
-    v0.1: retrieval, classification and persistence. Extraction and summarisation are not
-    built yet. The run is stored and its id returned as `run_id`.
+    v0.1: retrieval, classification, content extraction and persistence. Summarisation is
+    not built yet. The run is stored and its id returned as `run_id`.
+
+    Reading is capped at `ExtractionConfig.max_files_per_run`; selected files beyond the
+    cap are recorded as `not_fetched`, never dropped. See the 2026-08-18 amendment in
+    spec.md section 7.4 for why per-file reads were chosen over a tarball.
 
     Error policy for the tree step:
     - An explicit branch_or_ref that GitHub cannot resolve is a caller error -> HTTP 404.
@@ -198,7 +237,31 @@ async def analyze_repo(
                 "repository contains more. Classification below covers only those."
             )
 
-    # Step 5: persist. A degraded run is stored too, with its error and whatever
+    # Step 5: read and extract the selected files, capped. Runs only when a tree
+    # arrived; a degraded run has nothing selected to read.
+    extraction: ExtractionResult | None = None
+    if classification_result is not None and classification_result.selected:
+        extraction_cfg = get_extraction_config()
+
+        # One client for the whole run: a client per file means a TCP+TLS handshake per
+        # file, which dominated the read time before pooling.
+        async with open_client(
+            extraction_cfg.content_timeout,
+            max_connections=extraction_cfg.max_concurrent_reads,
+        ) as client:
+
+            async def _fetch(path: str) -> str:
+                return await fetch_file_content(
+                    normalized, path, resolved_ref, client=client
+                )
+
+            extraction = await fetch_and_extract(
+                [f.path for f in classification_result.selected],
+                _fetch,
+                extraction_cfg,
+            )
+
+    # Step 6: persist. A degraded run is stored too, with its error and whatever
     # metadata succeeded -- a run that vanished because it failed would be the worst
     # outcome for a tool whose pitch is that it tells you what went wrong.
     run_id = await storage.create_run(
@@ -215,7 +278,10 @@ async def analyze_repo(
         classification=classification_result,
     )
 
-    # Step 6: build response
+    if extraction is not None:
+        await storage.persist_extraction(session, run_id, extraction)
+
+    # Step 7: build response
     return {
         "run_id": run_id,
         "repo_url": str(request.repo_url),
@@ -228,6 +294,7 @@ async def analyze_repo(
         "tree_truncated": tree_truncated,
         "tree_error": tree_error,
         "classification": classification,
+        "extraction": _extraction_payload(extraction),
         "metadata": {
             "full_name": metadata.get("full_name"),
             "private": metadata.get("private"),
@@ -271,6 +338,19 @@ def _run_summary(run) -> dict:
             "selected_count": run.selected_count,
             "skipped_count": run.skipped_count,
             "failed_count": run.failed_count,
+        },
+        "extraction": {
+            "selected_total": run.selected_count,
+            "files_read": run.files_read,
+            "files_failed": run.files_read_failed,
+            "files_not_fetched": run.files_not_fetched,
+            "read_cap": run.read_cap,
+            "cap_applied": bool(run.files_not_fetched),
+            "chunk_count": run.chunk_count,
+            # the honesty line, stored so it reads the same long after the config changed
+            "read_of_selected": (
+                f"read {run.files_read} of {run.selected_count} selected files"
+            ),
         },
     }
 

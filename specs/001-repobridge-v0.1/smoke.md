@@ -13,19 +13,20 @@ repos for smoke tests" — with recorded outcomes rather than a single ad-hoc ch
 Latest recorded result per repo. The run log below is the historical record; this table is
 the answer to "where do we stand". Update it whenever a run is added.
 
-| Repo | Latest run | Date | Entries | Selected | Skipped | Rows stored | Leading skip reason |
-|---|---|---|---|---|---|---|---|
-| `kubernetes/kubernetes` | Run 5 | 2026-08-18 | 37393 | 8376 | 22924 | 37393 | `unsupported_extension` (17167) |
-| `github/docs` | Run 4 | 2026-08-17 | 14901 | 11215 | 2227 | not stored | `non_text_asset` (1814) |
-| `twitter/twemoji` | Run 3 | 2026-08-17 | 7413 | 17 | 7389 | not stored | `non_text_asset` (7378) |
-| `psf/requests` | Run 5 | 2026-08-18 | 153 | 107 | 23 | 153 | `unsupported_extension` (16) |
-| `Pushkar0997/quantum-toybox` | Run 5 | 2026-08-18 | 40 | 30 | 0 | 40 | — (nothing skipped) |
-| `octocat/Hello-World` | Run 4 | 2026-08-17 | 1 | 1 | 0 | not stored | — (nothing skipped) |
-| `Pushkar0997/definitely-not-a-real-repo-zzz` | Run 1 | 2026-08-17 | — | — | — | — | 404 at metadata, as intended |
+| Repo | Latest run | Date | Entries | Selected | Skipped | Rows stored | Files read | Chunks | Leading skip reason |
+|---|---|---|---|---|---|---|---|---|---|
+| `kubernetes/kubernetes` | Run 5 | 2026-08-18 | 37393 | 8376 | 22924 | 37393 | not read | — | `unsupported_extension` (17167) |
+| `github/docs` | Run 4 | 2026-08-17 | 14901 | 11215 | 2227 | not stored | not read | — | `non_text_asset` (1814) |
+| `twitter/twemoji` | Run 3 | 2026-08-17 | 7413 | 17 | 7389 | not stored | not read | — | `non_text_asset` (7378) |
+| `psf/requests` | Run 6 | 2026-08-18 | 153 | 107 | 23 | 153 | 107 of 107 | 104 | `unsupported_extension` (16) |
+| `Pushkar0997/quantum-toybox` | Run 6 | 2026-08-18 | 40 | 30 | 0 | 40 | 30 of 30 | 127 | — (nothing skipped) |
+| `octocat/Hello-World` | Run 4 | 2026-08-17 | 1 | 1 | 0 | not stored | not read | — | — (nothing skipped) |
+| `Pushkar0997/definitely-not-a-real-repo-zzz` | Run 1 | 2026-08-17 | — | — | — | — | — | — | 404 at metadata, as intended |
 
-Every repo in the suite has been classified. "Rows stored" reads *not stored* for repos last measured
-before persistence existed (Runs 3 and 4) — their classification figures are still valid, they
-simply predate the database.
+Every repo in the suite has been classified. "Rows stored" reads *not stored* for repos last
+measured before persistence existed (Runs 3 and 4), and "Files read" reads *not read* for repos
+last measured before extraction existed (Runs 3-5) — those figures are still valid, they simply
+predate the feature. Only the two repos in Run 6 have been through the full pipeline.
 
 **The accounting identity holds on every one of them**, including `kubernetes/kubernetes` at
 37,393 entries: `6093 + 8376 + 22924 + 0 == 37393`, with `accounts_for_every_entry: true`. No
@@ -38,6 +39,7 @@ tree entry has gone unaccounted for in any run, at any scale tried.
 | Run 3 | 2026-08-17 | Binary-heavy repo added; second spec amendment re-measured |
 | Run 4 | 2026-08-17 | Classification backfilled for the three Run 1 repos; identity tested at 37,393 entries |
 | Run 5 | 2026-08-18 | Persistence and the UI: runs stored and read back, two-process restart, tree-page scale honesty |
+| Run 6 | 2026-08-18 | Extraction: content read and chunked, notebook flattening verified against source, connection pooling measured |
 
 ---
 
@@ -49,7 +51,7 @@ it fails at the metadata step. A full pass is ~13 calls.
 **A token is strongly recommended.** Without `REPOBRIDGE_GITHUB_TOKEN` set you are on the
 unauthenticated 60/hour per-IP quota, which a full pass will exhaust if anything else has used
 it — that is exactly what happened during the first attempt at Run 1, recorded below. With a
-token the quota is 5000/hour. **Runs 1 through 5 were all authenticated at 5000/hour.**
+token the quota is 5000/hour. **Runs 1 through 6 were all authenticated at 5000/hour.**
 
 ```bash
 export REPOBRIDGE_GITHUB_TOKEN=your_token_here
@@ -369,6 +371,63 @@ The single-file lookup returned `staging/src/k8s.io/api/core/v1/types.go` as
   tests only.
 - Deep pagination was exercised (last page of 374) but not timed; offset scanning is known to
   degrade and was not measured here.
+
+---
+
+### Run 6 — 2026-08-18: content extraction (Milestone 5)
+
+- **Quota:** authenticated, 5000/hour (`REPOBRIDGE_GITHUB_TOKEN` set). Token never read or
+  logged.
+- **Purpose:** exercise reading and extraction end to end, verify notebook flattening against
+  the actual source file, and measure the effect of connection pooling.
+- **Method:** in-process `TestClient` against a scratch database outside the repo.
+
+| Repo | Selected | Read | Failed | Not fetched | Chunks | Identity | Time |
+|---|---|---|---|---|---|---|---|
+| `Pushkar0997/quantum-toybox` | 30 | 30 | 0 | 0 | 127 | yes | 5.1 s |
+| `psf/requests` | 107 | 107 | 0 | 0 | 104 | yes | 7.5 s |
+
+"Identity" is `selected == read + failed + not_fetched`, reported by the API as
+`accounts_for_every_selected_file`. Both repos are under the 200-file cap, so nothing was
+`not_fetched`; **the cap path has therefore never been exercised live** and is covered by
+tests only.
+
+**Chunk types, `quantum-toybox`:** `notebook_code` 69, `notebook_markdown` 46, `markdown` 11,
+`text` 1. 115 of 127 chunks came from notebooks, which is what a notebook-heavy repository
+should produce.
+
+**Notebook flattening verified against source.** Rather than eyeballing the output,
+`01_bell_state/basic_qiskit_implementation.ipynb` was re-fetched raw and compared cell by
+cell. 7 source cells, one empty, 6 chunks; every chunk matched its source cell on index, type
+and text:
+
+```
+cell 0  code      src  133 chars | chunk 0  notebook_code      133 chars | text equal: True
+cell 1  markdown  src  638 chars | chunk 1  notebook_markdown  638 chars | text equal: True
+cell 2  code      src  299 chars | chunk 2  notebook_code      299 chars | text equal: True
+cell 3  code      src  425 chars | chunk 3  notebook_code      425 chars | text equal: True
+cell 4  code      src  473 chars | chunk 4  notebook_code      473 chars | text equal: True
+cell 5  code      src  130 chars | chunk 5  notebook_code      130 chars | text equal: True
+```
+
+A plain file was checked the same way: `01_bell_state/README.md`, 868 characters in the
+source and 868 stored, identical after CRLF normalisation.
+
+**Read performance, `psf/requests` (107 files), measured in one session:**
+
+| Configuration | Time | API calls |
+|---|---|---|
+| Sequential | 99.6 s | 110 |
+| Concurrent, bound 8, client per request | 49.1 s | 110 |
+| Concurrent, bound 8, **shared client** | **7.5 s** | 110 |
+
+Call count is identical throughout — concurrency and pooling change *when* requests happen,
+not how many. The pooling step was the larger win by far: one client per request meant one
+TCP+TLS handshake per file, which is why 8x concurrency had only bought 2x. With a shared
+connection pool the same bound gives **13.3x** over sequential.
+
+**No rate-limit failures** were observed at bound 8 in any run, checked explicitly rather
+than inferred from the run succeeding.
 
 ---
 

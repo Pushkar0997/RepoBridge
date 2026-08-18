@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
-from repobridge.config import DEFAULT_GITHUB_CONFIG, GitHubConfig, get_github_token
+from urllib.parse import quote
+
+from repobridge.config import (
+    DEFAULT_EXTRACTION_CONFIG,
+    DEFAULT_GITHUB_CONFIG,
+    ExtractionConfig,
+    GitHubConfig,
+    get_github_token,
+)
 from repobridge.core.input import NormalizedRepoURL
 
 logger = logging.getLogger(__name__)
@@ -87,16 +98,49 @@ def _rate_limit_message(resp: httpx.Response, context: str) -> str:
     return " ".join(parts)
 
 
-async def _get(url: str, *, headers: dict[str, str], timeout: float, context: str) -> httpx.Response:
+@asynccontextmanager
+async def open_client(
+    timeout: float,
+    max_connections: int = 10,
+) -> "httpx.AsyncClient":
+    """
+    A client to be shared across many requests in one run.
+
+    One client per request means one TCP+TLS handshake per request. A 107-file read paid
+    107 of them, which is why 8x concurrency only bought 2x throughput. Sharing a client
+    reuses connections; `max_connections` should match or exceed the caller's concurrency
+    bound so the pool is not the bottleneck.
+    """
+    limits = httpx.Limits(
+        max_connections=max_connections, max_keepalive_connections=max_connections
+    )
+    async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+        yield client
+
+
+async def _get(
+    url: str,
+    *,
+    headers: dict[str, str],
+    timeout: float,
+    context: str,
+    client: httpx.AsyncClient | None = None,
+) -> httpx.Response:
     """
     Perform a GET, converting transport-level failures into GitHubClientError.
 
     Without this, an httpx.ConnectError / TimeoutException would escape uncaught and
     surface through the API as a 500 with a traceback.
+
+    `client` lets a caller share one connection pool across many requests. When omitted a
+    client is created for this single request, which is right for the one-off metadata and
+    tree calls and wrong for a run that reads 200 files.
     """
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        if client is not None:
             return await client.get(url, headers=headers)
+        async with httpx.AsyncClient(timeout=timeout) as own_client:
+            return await own_client.get(url, headers=headers)
     except httpx.RequestError as exc:
         logger.warning("Network failure while %s: %s", context, type(exc).__name__)
         raise GitHubClientError(
@@ -188,3 +232,69 @@ async def fetch_repo_tree(
         not_found_message="Git tree not found for the given ref.",
     )
     return resp.json()
+
+
+async def fetch_file_content(
+    normalized: NormalizedRepoURL,
+    path: str,
+    ref: str | None = None,
+    cfg: GitHubConfig = DEFAULT_GITHUB_CONFIG,
+    extraction_cfg: ExtractionConfig = DEFAULT_EXTRACTION_CONFIG,
+    client: httpx.AsyncClient | None = None,
+) -> str:
+    """
+    Fetch one file's decoded text via GitHub's contents API.
+
+    One call per file, per spec.md section 7.4 and the 2026-08-18 amendment recording why
+    the tarball alternative was rejected. Callers cap how many times this is invoked; this
+    function does not, because it has no view of the run.
+
+    Raises GitHubClientError for HTTP failures and for content that is not decodable UTF-8
+    text -- a binary file that slipped past classification is a per-file failure, not a
+    reason to end a run.
+    """
+    context = f"reading {path}"
+    quoted = quote(path)
+    url = f"{cfg.api_base_url}/repos/{normalized.owner}/{normalized.name}/contents/{quoted}"
+    if ref:
+        url = f"{url}?ref={quote(ref, safe='')}"
+
+    resp = await _get(
+        url,
+        headers=_build_headers(cfg),
+        timeout=extraction_cfg.content_timeout,
+        context=context,
+        client=client,
+    )
+    _raise_for_error(
+        resp,
+        context=context,
+        not_found_message=f"File '{path}' was not found at this ref.",
+    )
+
+    payload = resp.json()
+    if isinstance(payload, list):
+        # the contents API returns a list for directories
+        raise GitHubClientError(f"'{path}' is a directory, not a file.", status_code=None)
+
+    encoding = payload.get("encoding")
+    raw = payload.get("content")
+    if encoding != "base64" or raw is None:
+        # files at/above 1MB come back with no inline content; our selection cap is 1MB,
+        # so this is unexpected rather than routine -- say so plainly.
+        raise GitHubClientError(
+            f"GitHub returned no inline content for '{path}' (encoding={encoding!r}).",
+            status_code=resp.status_code,
+        )
+
+    try:
+        data = base64.b64decode(raw, validate=False)
+    except (binascii.Error, ValueError) as exc:
+        raise GitHubClientError(f"Content for '{path}' was not valid base64: {exc}") from exc
+
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise GitHubClientError(
+            f"'{path}' is not UTF-8 text and cannot be read as content ({exc.reason})."
+        ) from exc

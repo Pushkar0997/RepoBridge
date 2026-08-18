@@ -7,6 +7,10 @@ fixture in conftest.py; these tests never touch the network.
 
 from __future__ import annotations
 
+import base64
+import json
+from urllib.parse import unquote
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -30,6 +34,25 @@ REPO_URL = f"https://github.com/{OWNER}/{REPO}"
 
 METADATA_PATH = f"/repos/{OWNER}/{REPO}"
 TREE_PATH_PREFIX = f"/repos/{OWNER}/{REPO}/git/trees/"
+CONTENTS_PATH_PREFIX = f"/repos/{OWNER}/{REPO}/contents/"
+
+NOTEBOOK_JSON = json.dumps(
+    {
+        "cells": [
+            {"cell_type": "markdown", "source": ["# Notebook title\n"]},
+            {"cell_type": "code", "source": ["import qiskit\n", "qc = None\n"]},
+        ],
+        "metadata": {},
+        "nbformat": 4,
+    }
+)
+
+#: content served for specific paths by the default content responder
+FILE_CONTENTS = {
+    "README.md": "# Demo\n\nProse.\n",
+    "src/app.py": "def f():\n    return 1\n",
+    "nb.ipynb": NOTEBOOK_JSON,
+}
 
 METADATA = {
     "full_name": f"{OWNER}/{REPO}",
@@ -55,7 +78,21 @@ def _tree_body(entries: list[dict], truncated: bool = False) -> dict:
     return {"sha": "a" * 40, "url": "https://api.github.com/...", "truncated": truncated, "tree": entries}
 
 
-def _install(install_transport, tree_responder, metadata_responder=None) -> list[tuple[str, str | None]]:
+def _contents_response(path: str, text: str) -> httpx.Response:
+    """Mimic GitHub's contents API: base64 payload with an encoding field."""
+    return httpx.Response(
+        200,
+        json={
+            "path": path,
+            "encoding": "base64",
+            "content": base64.b64encode(text.encode("utf-8")).decode("ascii"),
+        },
+    )
+
+
+def _install(
+    install_transport, tree_responder, metadata_responder=None, content_responder=None
+) -> list[tuple[str, str | None]]:
     """
     Serve the two GitHub endpoints /api/analyze uses, on top of the shared
     `install_transport` fixture from conftest.py.
@@ -80,6 +117,14 @@ def _install(install_transport, tree_responder, metadata_responder=None) -> list
             ref = path[len(TREE_PATH_PREFIX) :]
             calls.append(("tree", ref))
             return tree_responder(ref)
+        if path.startswith(CONTENTS_PATH_PREFIX):
+            file_path = unquote(path[len(CONTENTS_PATH_PREFIX) :])
+            calls.append(("contents", file_path))
+            if content_responder is not None:
+                return content_responder(file_path)
+            return _contents_response(
+                    file_path, FILE_CONTENTS.get(file_path, "placeholder\n")
+                )
         return httpx.Response(500, json={"message": f"unexpected path: {path}"})
 
     install_transport(handle)

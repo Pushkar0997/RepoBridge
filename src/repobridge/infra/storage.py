@@ -14,12 +14,14 @@ from __future__ import annotations
 import uuid
 from typing import Any, Iterable, Sequence
 
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repobridge.config import DEFAULT_DATABASE_CONFIG, DatabaseConfig
+from repobridge.core.extraction import ExtractionResult
 from repobridge.core.selection import ClassificationResult
 from repobridge.infra.schemas import (
+    AnalysisChunk,
     AnalysisFile,
     AnalysisRun,
     RunStatus,
@@ -270,3 +272,141 @@ async def create_failed_run(
         error=error,
         status=RunStatus.FAILED.value,
     )
+
+
+async def persist_extraction(
+    session: AsyncSession,
+    run_id: str,
+    result: ExtractionResult,
+    cfg: DatabaseConfig = DEFAULT_DATABASE_CONFIG,
+) -> None:
+    """
+    Record what happened to each selected file, and store its chunks.
+
+    Updates the existing `analysis_files` rows rather than inserting new ones: a file's
+    classification and its content outcome are two facts about the same entry. Every
+    selected file gets a `content_status`, including the ones the cap never reached --
+    the identity `selected == read + failed + not_fetched` must hold from the rows.
+    """
+    # one lookup of path -> file id, rather than a query per file
+    rows = (
+        await session.execute(
+            select(AnalysisFile.id, AnalysisFile.path).where(
+                AnalysisFile.run_id == run_id,
+                AnalysisFile.status == StoredEntryStatus.SELECTED.value,
+            )
+        )
+    ).all()
+    file_ids = {path: file_id for file_id, path in rows}
+
+    chunk_rows: list[dict[str, Any]] = []
+    chunk_total = 0
+
+    for extraction in result.files:
+        file_id = file_ids.get(extraction.path)
+        if file_id is None:
+            # a path we did not classify as selected: should not happen, and silently
+            # skipping it would break the identity, so it is worth knowing about
+            continue
+
+        await session.execute(
+            update(AnalysisFile)
+            .where(AnalysisFile.id == file_id)
+            .values(
+                content_status=extraction.status.value,
+                content_error=extraction.error,
+                content_sha=extraction.content_sha,
+                content_bytes=extraction.byte_count,
+            )
+        )
+
+        for chunk in extraction.chunks:
+            chunk_total += 1
+            chunk_rows.append(
+                {
+                    "run_id": run_id,
+                    "file_id": file_id,
+                    "source_path": chunk.source_path,
+                    "chunk_index": chunk.chunk_index,
+                    "chunk_type": chunk.chunk_type.value,
+                    "cell_index": chunk.cell_index,
+                    "text": chunk.text,
+                    "char_count": chunk.char_count,
+                    "token_estimate": chunk.token_estimate(),
+                }
+            )
+
+    for start in range(0, len(chunk_rows), cfg.insert_batch_size):
+        batch = chunk_rows[start : start + cfg.insert_batch_size]
+        if batch:
+            await session.execute(insert(AnalysisChunk), batch)
+
+    await session.execute(
+        update(AnalysisRun)
+        .where(AnalysisRun.id == run_id)
+        .values(
+            files_read=len(result.read),
+            files_read_failed=len(result.failed),
+            files_not_fetched=len(result.not_fetched),
+            read_cap=result.cap,
+            chunk_count=chunk_total,
+        )
+    )
+    await session.commit()
+
+
+async def list_run_chunks(
+    session: AsyncSession,
+    run_id: str,
+    *,
+    chunk_type: str | None = None,
+    path_contains: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    include_text: bool = False,
+) -> tuple[Sequence[AnalysisChunk], int]:
+    """
+    One page of a run's chunks. Text is opt-in: chunk bodies are whole files.
+    """
+    conditions = [AnalysisChunk.run_id == run_id]
+    if chunk_type:
+        conditions.append(AnalysisChunk.chunk_type == chunk_type)
+    if path_contains:
+        conditions.append(AnalysisChunk.source_path.contains(path_contains, autoescape=True))
+
+    total = (
+        await session.scalar(
+            select(func.count()).select_from(AnalysisChunk).where(*conditions)
+        )
+        or 0
+    )
+    stmt = (
+        select(AnalysisChunk)
+        .where(*conditions)
+        .order_by(AnalysisChunk.source_path, AnalysisChunk.chunk_index, AnalysisChunk.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return rows, total
+
+
+async def content_status_counts(session: AsyncSession, run_id: str) -> dict[str, int]:
+    """Recompute read/failed/not_fetched from the rows, for the identity check."""
+    stmt = (
+        select(AnalysisFile.content_status, func.count())
+        .where(AnalysisFile.run_id == run_id, AnalysisFile.content_status.is_not(None))
+        .group_by(AnalysisFile.content_status)
+    )
+    return {status: count for status, count in (await session.execute(stmt)).all()}
+
+
+async def chunk_counts_by_type(session: AsyncSession, run_id: str) -> dict[str, int]:
+    """Chunk counts grouped by type, for the run detail page."""
+    stmt = (
+        select(AnalysisChunk.chunk_type, func.count())
+        .where(AnalysisChunk.run_id == run_id)
+        .group_by(AnalysisChunk.chunk_type)
+        .order_by(func.count().desc())
+    )
+    return {chunk_type: count for chunk_type, count in (await session.execute(stmt)).all()}

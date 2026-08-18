@@ -120,6 +120,50 @@ For each analysis run:
    - For selected files, request contents via GitHub contents APIs.
    - Store raw content plus metadata (path, size, type, hash).
    - Handle partial failures without aborting the entire run.
+   - **Reading is capped per run** (`ExtractionConfig.max_files_per_run`, default 200).
+     Selected files beyond the cap are recorded as `not_fetched`, never silently dropped.
+
+   #### Amendment — 2026-08-18: retrieval model and the read cap
+
+   **Trigger.** Measuring Milestone 3 against real repositories showed the cost of an
+   uncapped per-file read. `github/docs` selects **11,215 files**; at one contents-API call
+   each that is more than twice the *entire* authenticated hourly quota (5,000) for a single
+   repository. `kubernetes/kubernetes` selects 8,376. Fetching cannot be uncapped.
+
+   **Two models were weighed.**
+
+   *(a) Per-file contents API* — one call per file. Native per-file error isolation, no new
+   machinery, and the model this section already specifies.
+
+   *(b) Tarball/zipball* — one call for the whole repository, then read locally. Far cheaper
+   in API calls, but it changes the retrieval model, needs archive extraction, temporary disk
+   and decompression limits, downloads everything including the files selection already
+   decided to skip (22,924 of them for `kubernetes`), and **collapses per-file HTTP errors
+   into a single archive-level success or failure**.
+
+   **Decision: (a), with a per-run cap.** Three reasons, in order of weight:
+
+   1. **Per-file status is load-bearing.** This specification requires partial failures not to
+      abort a run, and the accounting identity requires every selected file to end in a known
+      state. Under (b) there is no per-file HTTP result to record — a file that could not be
+      read would be indistinguishable from one that decoded badly, and `failed` would stop
+      meaning anything precise.
+   2. **The cap solves the actual problem.** (b)'s advantage is call count; a cap bounds call
+      count at `limit + 2` per run whatever the repository's size. `github/docs` costs 202
+      calls, not 11,215. Once bounded, (b)'s remaining differences are all costs.
+   3. **Scope.** Archive handling means temp files, cleanup, and decompression-bomb limits —
+      surface that `AGENTS.md`'s "small, local, focused" boundary argues against for v0.1.
+
+   **What the cap does not do.** It does not hide anything. A capped run reports
+   `read N of M selected files`, and every unread file carries `content_status =
+   not_fetched` with the reason. The identity extends rather than weakens:
+
+   ```
+   selected == read + failed + not_fetched
+   ```
+
+   **Revisit (b) if** whole-repository extraction becomes a goal, at which point the per-file
+   status model needs redesigning first, not retrofitting.
 
 5. **Extraction & normalization**
    - Convert markdown files into plain text with basic structure preserved.

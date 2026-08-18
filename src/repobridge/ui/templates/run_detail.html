@@ -106,5 +106,73 @@
 
   <p><a class="button-link" href="/runs/{{ run.id }}/tree">Browse all {{ run.tree_entry_count }} entries &rarr;</a></p>
 </section>
+
+<section>
+  <h3>Extracted content</h3>
+
+  <p class="scope">
+    <strong>{{ run.files_read }}</strong> of <strong>{{ run.selected_count }}</strong>
+    selected files were read, producing <strong>{{ run.chunk_count }}</strong> chunk{{ '' if run.chunk_count == 1 else 's' }}.
+    {% if run.files_not_fetched %}
+      <span class="warn-inline">{{ run.files_not_fetched }} selected file{{ '' if run.files_not_fetched == 1 else 's' }}
+      were not read: this run reads at most {{ run.read_cap }}.</span>
+    {% endif %}
+    {% if run.files_read_failed %}
+      <span class="warn-inline">{{ run.files_read_failed }} could not be read or decoded.</span>
+    {% endif %}
+  </p>
+
+  {% if chunk_types %}
+    <div class="counts">
+      {% for chunk_type, count in chunk_types.items() %}
+        <span class="count-card">
+          <span class="count">{{ count }}</span>
+          <span class="badge badge-chunk">{{ chunk_type }}</span>
+        </span>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {% if chunk_sample %}
+    {# The honesty line again: a sample must never read as the whole. #}
+    <p class="muted">
+      Showing <strong>{{ chunk_sample|length }}</strong> of <strong>{{ chunk_total }}</strong>
+      chunk{{ '' if chunk_total == 1 else 's' }}, ordered by source path.
+      Every chunk records where it came from and where in that file.
+    </p>
+    <table>
+      <thead>
+        <tr><th>Source</th><th>Type</th><th class="num">Chunk</th><th class="num">Cell</th><th class="num">Chars</th><th>Preview</th></tr>
+      </thead>
+      <tbody>
+        {% for chunk in chunk_sample %}
+        <tr>
+          <td class="mono">{{ chunk.source_path }}</td>
+          <td><span class="badge badge-chunk">{{ chunk.chunk_type }}</span></td>
+          <td class="num">{{ chunk.chunk_index }}</td>
+          <td class="num">
+            {%- if chunk.cell_index is not none -%}
+              {{ chunk.cell_index }}
+            {%- else -%}
+              <span class="muted">&mdash;</span>
+            {%- endif -%}
+          </td>
+          <td class="num muted">{{ chunk.char_count }}</td>
+          <td class="mono small">{{ chunk.text[:120] }}{% if chunk.text|length > 120 %}&hellip;{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted small">
+      The <strong>Cell</strong> column is the notebook cell this chunk came from; it is
+      blank for files that are not notebooks. Notebook markdown and code cells are kept
+      as separate chunks.
+    </p>
+  {% elif run.files_read %}
+    <p class="muted">The files that were read contained no extractable text.</p>
+  {% else %}
+    <p class="muted">No files were read for this run.</p>
+  {% endif %}
+</section>
 {% endif %}
 {% endblock %}

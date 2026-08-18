@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass
@@ -150,3 +150,58 @@ DEFAULT_DATABASE_CONFIG = DatabaseConfig()
 def get_database_url(cfg: DatabaseConfig = DEFAULT_DATABASE_CONFIG) -> str:
     """Database URL from the environment if set, else the configured default."""
     return os.getenv(cfg.url_env_var) or cfg.default_url
+
+
+@dataclass(frozen=True)
+class ExtractionConfig:
+    """
+    Limits and rules for reading and normalising file content.
+
+    The cap is the important one. `github/docs` selects 11,215 files; at one contents-API
+    call each that exceeds the whole authenticated hourly quota for a single repository.
+    See the 2026-08-18 amendment in spec.md section 7.4.
+    """
+
+    #: Selected files read per run. Beyond this, files are recorded as `not_fetched`
+    #: rather than dropped, and the run says how many it read of how many it selected.
+    max_files_per_run: int = 200
+
+    #: Env override for the cap, so it is tunable without editing code -- the same
+    #: pattern as the token and the database URL.
+    max_files_env_var: str = "REPOBRIDGE_MAX_FILES_PER_RUN"
+
+    #: How many file reads run at once. Sequential reads cost ~1s each in round-trip
+    #: latency, so 107 files took 100s. Bounded rather than unbounded because
+    #: concurrency is what actually trips GitHub's *secondary* rate limits -- the
+    #: client detects those (403 + Retry-After), but the cheaper fix is not to
+    #: provoke them. 8 is conservative against GitHub's published guidance.
+    max_concurrent_reads: int = 8
+
+    #: Per-file content request timeout, seconds.
+    content_timeout: float = 15.0
+
+    #: Characters per token, for the stored estimate. A heuristic, not a tokenizer:
+    #: no tokenizer dependency is worth adding for a number used only for budgeting.
+    chars_per_token: int = 4
+
+
+DEFAULT_EXTRACTION_CONFIG = ExtractionConfig()
+
+
+def get_extraction_config(cfg: ExtractionConfig = DEFAULT_EXTRACTION_CONFIG) -> ExtractionConfig:
+    """
+    Extraction config with the read cap taken from the environment when set.
+
+    Read at call time, not import time: a default argument binds once, which would make
+    the cap untunable without a restart and untestable without reaching into module
+    internals.
+    """
+    raw = os.getenv(cfg.max_files_env_var)
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            return cfg
+        if value > 0:
+            return replace(cfg, max_files_per_run=value)
+    return cfg

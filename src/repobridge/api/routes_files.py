@@ -77,6 +77,10 @@ async def list_run_files(
                 "size": r.size,
                 "reason": r.skip_reason,
                 "message": r.message,
+                # content retrieval outcome; null for entries never eligible to be read
+                "content_status": r.content_status,
+                "content_error": r.content_error,
+                "content_bytes": r.content_bytes,
             }
             for r in rows
         ],

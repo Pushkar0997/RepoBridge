@@ -10,6 +10,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from urllib.parse import urlencode
 
+from repobridge.api.routes_chunks import router as chunks_router
 from repobridge.api.routes_files import router as files_router
 from repobridge.api.routes_runs import router as runs_router
 from repobridge.core.selection import SkipReason
@@ -59,6 +60,10 @@ async def health() -> dict:
 # real URL that the back button and a shared link both work on.
 TREE_PAGE_SIZE = 100
 
+# How many chunks the run detail page previews. Small on purpose: it is a sample to show
+# what extraction produced, and the page states how many of the total it is showing.
+CHUNK_PREVIEW_COUNT = 20
+
 
 def tree_url(run_id: str, *, status=None, reason=None, path=None, offset: int = 0) -> str:
     """
@@ -100,6 +105,9 @@ async def run_detail_page(
     if run is None:
         raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
 
+    chunk_sample, chunk_total = await storage.list_run_chunks(
+        session, run_id, limit=CHUNK_PREVIEW_COUNT
+    )
     return templates.TemplateResponse(
         request=request,
         name="run_detail.html",
@@ -107,6 +115,10 @@ async def run_detail_page(
             "title": f"{run.owner}/{run.name} – RepoBridge",
             "run": run,
             "reasons": await storage.counts_by_reason(session, run_id),
+            "chunk_types": await storage.chunk_counts_by_type(session, run_id),
+            "chunk_sample": chunk_sample,
+            "chunk_total": chunk_total,
+            "chunk_preview_count": CHUNK_PREVIEW_COUNT,
         },
     )
 
@@ -166,3 +178,4 @@ async def run_tree_page(
 # Include API routers (Milestone 1 and later)
 app.include_router(runs_router)
 app.include_router(files_router)
+app.include_router(chunks_router)

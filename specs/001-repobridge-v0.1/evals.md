@@ -486,6 +486,72 @@ Use files like:
 
 ---
 
+### Recorded verdict — 2026-08-18
+
+Judged against the code as it stands. A criterion is PASS only where a test or a recorded
+live result backs it. Test suite at time of judging: **293 passing**. Live results are
+`smoke.md` Run 6.
+
+| Criterion | Source | Verdict | Evidence |
+|---|---|---|---|
+| Markdown/text extractor | plan D1 | PASS | `core/extraction.py:extract_file`; `test_markdown_becomes_a_markdown_chunk`, `test_plain_text_and_rst_become_text_chunks`; live `01_bell_state/README.md` byte-identical to source |
+| Code file extractor | plan D2 | PASS | `test_python_preserves_code_structure` asserts text equals source verbatim including indentation; `test_code_formats_are_code_chunks` for `.js`/`.ts`/`.sh`/`.bat` |
+| Notebook parser | plan D3 | PASS | `core/extraction.py:extract_notebook`; 11 notebook tests; live cell-by-cell comparison below |
+| Chunk model and persistence | plan D4 | PASS | `AnalysisChunk` in `infra/schemas.py`, `storage.persist_extraction`; `test_chunks_endpoint_returns_traceable_chunks`; live 127 chunks stored and read back |
+| Notebook markdown and code cells preserved distinctly | plan E1 | PASS | `test_notebook_markdown_and_code_cells_stay_distinct`; live: 6/6 cells matched type exactly |
+| Extracted content readable and linked to source paths | plan E2 | PASS | `source_path` and `chunk_index` are NOT NULL in the schema; `test_every_chunk_carries_its_source_path_and_position`; live preview shows both |
+| Malformed files fail gracefully | plan E3 | PASS | `test_malformed_notebooks_raise_a_specific_error` (4 shapes); `test_a_malformed_notebook_does_not_end_the_run` — the run stays `completed` |
+| Compare extracted output with source files | plan V1 | PASS | Live byte-for-byte: README.md 868 chars in, 868 out, identical after CRLF normalisation; notebook cells compared individually against the raw `.ipynb` JSON — index, type and text all match |
+| Test malformed notebook handling | plan V2 | PASS | four malformed shapes plus a malformed *cell* inside a valid notebook |
+| Verify chunk counts and source links | plan V3 | PASS | `test_chunks_from_all_files_are_collected_and_traceable`; live 127 chunks across 30 files, every one carrying its path |
+| Markdown and text readable after normalisation | evals | PASS | as plan D1; CRLF normalised (`test_crlf_is_normalised`) |
+| Code files preserve code structure | evals | PASS | as plan D2 |
+| Notebook cells separated correctly | evals | PASS | as plan E1 |
+| Malformed files fail gracefully | evals | PASS | as plan E3 |
+| Extracted chunks tied back to source paths | evals | PASS | as plan E2 |
+| Notebook extraction preserves cell boundaries | evals | PASS | live: 7 source cells, 1 empty, 6 chunks, `cell_index` values `[0,1,2,3,4,5]` matching the source positions |
+| Malformed inputs do not crash the run | evals | PASS | as plan E3; also non-UTF-8 content (`test_non_utf8_content_is_a_per_file_failure`) |
+
+#### The three named failure signals
+
+**"Broken notebook parsing" — eliminated.** Verified live against a real notebook rather
+than a fixture: `01_bell_state/basic_qiskit_implementation.ipynb` has 7 cells, one empty.
+Extraction produced 6 chunks, and every one matched the source cell exactly on **index,
+type and text**:
+
+```
+cell 0  code      src  133 chars | chunk 0  notebook_code      133 chars | text equal: True
+cell 1  markdown  src  638 chars | chunk 1  notebook_markdown  638 chars | text equal: True
+cell 2  code      src  299 chars | chunk 2  notebook_code      299 chars | text equal: True
+...
+```
+
+**"Chunks with no file traceability" — eliminated structurally.** `source_path` and
+`chunk_index` are `NOT NULL` columns, so an untraceable chunk cannot be stored; notebook
+chunks additionally carry `cell_index`. The run detail page surfaces all three.
+
+**"Empty extraction output for readable files" — not observed, with one deliberate
+exception.** `py.typed` and `.nojekyll` are selected and produce zero chunks, which is
+correct: they are zero-byte marker files whose existence is the signal (see
+`selection.md`). No file with actual content produced empty output in any run.
+
+#### Milestone 5 status — CLOSED, 2026-08-18
+
+**Every criterion is PASS. Milestone 5 is recorded as closed.**
+
+Caveats carried forward, recorded as notes rather than blockers:
+- **A capped run reads the alphabetically-first N files, not the most useful N.** Recorded
+  as an open item in `plan.md` under Milestone 5; it is a ranking question for Milestone 6,
+  and the run reports the cap honestly in the meantime.
+- **No size-based chunk splitting.** One chunk per file except notebooks, because no token
+  budget exists to split against until summarisation. `chunk_index` is already recorded, so
+  adding splitting later does not change the model.
+- **The token estimate is `chars // 4`**, a heuristic and not a tokenizer.
+- **The read cap has never been hit live.** Both smoke repos are under 200 selected files;
+  the cap path is covered by tests only.
+
+---
+
 ## Milestone 6 – Summary generation evals
 
 ### Evaluation set

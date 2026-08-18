@@ -280,6 +280,33 @@ Convert selected files into normalized text chunks.
 
 ---
 
+## Milestone 5 — open item: which 200 files a capped run reads
+
+**Recorded 2026-08-18. Not a defect in Milestone 5; a ranking question for Milestone 6.**
+
+The read cap (`ExtractionConfig.max_files_per_run`, default 200) takes the *first* N
+selected files. Selection order is classification order, which is GitHub's tree order,
+which is roughly alphabetical by path. So a capped run reads the alphabetically-first 200
+files, not the most useful 200.
+
+For `github/docs` (11,215 selected) that means content is drawn from whatever sorts early
+— likely `.github/`, `api/`, `assets/` — while the repository's actual documentation may
+sort later and never be read. The run reports this honestly (`read 200 of 11,215`), so
+nothing is hidden, but the *sample* is arbitrary rather than representative.
+
+This matters at Milestone 6, not before: a summary grounded in an alphabetical slice of a
+large repository would be grounded in the wrong 2%. Options to weigh then:
+
+- rank by path depth and name (`README.md`, top-level docs, package entry points first);
+- rank by directory importance (`src/`, `docs/` ahead of `.github/`, `examples/`);
+- rank by file size, on the theory that substantial files carry more signal;
+- sample across directories rather than taking a prefix, so coverage is spread.
+
+Whatever is chosen, the honesty rule stands: the run must keep saying how many of how many
+it read, and unread files must keep their `not_fetched` status.
+
+---
+
 ## Milestone 6 — Grounded summary generation
 
 ### Goal

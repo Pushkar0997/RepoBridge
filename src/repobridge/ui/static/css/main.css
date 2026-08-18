@@ -231,3 +231,6 @@ table.tree td {
 .button-link.disabled { color: #aaa; background: #f3f3f3; }
 
 button:disabled { background: #9bb8e6; cursor: progress; }
+
+.badge-chunk { background: #eef4ff; color: #23407a; border-color: #c9d9f5; }
+.count-card .badge { white-space: nowrap; }
