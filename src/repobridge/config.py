@@ -205,3 +205,56 @@ def get_extraction_config(cfg: ExtractionConfig = DEFAULT_EXTRACTION_CONFIG) -> 
         if value > 0:
             return replace(cfg, max_files_per_run=value)
     return cfg
+
+
+@dataclass(frozen=True)
+class SummarizationConfig:
+    """
+    Grounded summary generation via Google Gemini (AI Studio).
+
+    One provider, no adapter layer. See the 2026-08-18 amendment in spec.md section 7.6
+    for why Gemini over Groq, and for the recorded trade-off about free-tier training on
+    submitted prompts.
+    """
+
+    #: The key is read from the environment only -- never a request field, never stored.
+    api_key_env_var: str = "REPOBRIDGE_GEMINI_API_KEY"
+
+    #: Verified working 2026-08-18. `gemini-2.5-flash` is still listed by the models
+    #: endpoint but 404s when called, so model IDs must be exercised, not assumed.
+    model: str = "gemini-3.7-flash"
+    api_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    timeout: float = 120.0
+
+    #: Token budget for the chunk text placed in the prompt. Far below the model's
+    #: 1,048,576-token context: the constraint is cost and latency, not capacity.
+    #: Measured with the chars//4 heuristic, which is crude -- see the note in
+    #: `core/summarization.py`.
+    max_prompt_tokens: int = 120_000
+    budget_env_var: str = "REPOBRIDGE_SUMMARY_TOKEN_BUDGET"
+
+    #: Cap on generated length.
+    max_output_tokens: int = 4096
+
+
+DEFAULT_SUMMARIZATION_CONFIG = SummarizationConfig()
+
+
+def get_gemini_api_key(cfg: SummarizationConfig = DEFAULT_SUMMARIZATION_CONFIG) -> str | None:
+    """Gemini key from the environment, or None. Never logged, never persisted."""
+    return os.getenv(cfg.api_key_env_var)
+
+
+def get_summarization_config(
+    cfg: SummarizationConfig = DEFAULT_SUMMARIZATION_CONFIG,
+) -> SummarizationConfig:
+    """Config with the token budget taken from the environment when set."""
+    raw = os.getenv(cfg.budget_env_var)
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            return cfg
+        if value > 0:
+            return replace(cfg, max_prompt_tokens=value)
+    return cfg

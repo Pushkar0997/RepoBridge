@@ -40,7 +40,8 @@ class Base(DeclarativeBase):
 
 #: Bumped whenever the schema changes. Stored in SQLite's PRAGMA user_version and
 #: checked at startup. v1: runs + files. v2: adds chunks and the content columns.
-SCHEMA_VERSION = 2
+#: v3: adds the summary columns.
+SCHEMA_VERSION = 3
 
 
 def _utcnow() -> datetime:
@@ -143,6 +144,18 @@ class AnalysisRun(Base):
     files_not_fetched: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     read_cap: Mapped[int | None] = mapped_column(Integer)
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Grounded summary. `summary_provenance` is JSON: what was read and what was not,
+    # computed from this run's own inventory before the model was called. It travels with
+    # the prose so a reader can check the summary without trusting it.
+    # NOTE: there is deliberately no column for the provider API key, as with the GitHub
+    # token. The key lives in the environment and is never persisted.
+    summary_status: Mapped[str | None] = mapped_column(String(24))
+    summary_text: Mapped[str | None] = mapped_column(Text)
+    summary_model: Mapped[str | None] = mapped_column(String(64))
+    summary_error: Mapped[str | None] = mapped_column(Text)
+    summary_provenance: Mapped[str | None] = mapped_column(Text)
+    summary_prompt_tokens: Mapped[int | None] = mapped_column(Integer)
 
     files: Mapped[list["AnalysisFile"]] = relationship(
         back_populates="run", cascade="all, delete-orphan", lazy="selectin"

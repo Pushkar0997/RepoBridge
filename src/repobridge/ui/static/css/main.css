@@ -234,3 +234,15 @@ button:disabled { background: #9bb8e6; cursor: progress; }
 
 .badge-chunk { background: #eef4ff; color: #23407a; border-color: #c9d9f5; }
 .count-card .badge { white-space: nowrap; }
+
+.summary-text {
+  background: #fff;
+  border: 1px solid #e2e2e2;
+  border-radius: 6px;
+  padding: 0.25rem 1rem;
+  line-height: 1.55;
+}
+
+.summary-text p { margin: 0.8rem 0; }
+.notice ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+.notice li { margin: 0.2rem 0; }

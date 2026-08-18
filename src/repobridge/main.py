@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 import logging
 from pathlib import Path
 
+import json
 from contextlib import asynccontextmanager
 from urllib.parse import urlencode
 
@@ -119,6 +120,9 @@ async def run_detail_page(
             "chunk_sample": chunk_sample,
             "chunk_total": chunk_total,
             "chunk_preview_count": CHUNK_PREVIEW_COUNT,
+            "summary_provenance": (
+                json.loads(run.summary_provenance) if run.summary_provenance else None
+            ),
         },
     )
 

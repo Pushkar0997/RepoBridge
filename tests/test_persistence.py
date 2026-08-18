@@ -218,10 +218,45 @@ def test_run_survives_a_restart(file_database):
 # --------------------------------------------------------------------------
 
 
-def test_schema_has_no_token_column():
-    for table in (AnalysisRun.__table__, AnalysisFile.__table__):
+#: Substrings that would indicate a column holding a credential. Deliberately not the
+#: bare word "token": `summary_prompt_tokens` is a *count*, and a test that cannot tell a
+#: count from a secret would either block honest columns or be silenced entirely.
+CREDENTIAL_NAME_PATTERNS = (
+    "api_key",
+    "apikey",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "access_token",
+    "auth_token",
+    "bearer",
+    "private_key",
+)
+
+
+def test_schema_has_no_credential_column():
+    from repobridge.infra.schemas import AnalysisChunk
+
+    for table in (AnalysisRun.__table__, AnalysisFile.__table__, AnalysisChunk.__table__):
         for column in table.columns:
-            assert "token" not in column.name.lower(), f"{table.name}.{column.name}"
+            name = column.name.lower()
+            for pattern in CREDENTIAL_NAME_PATTERNS:
+                assert pattern not in name, f"{table.name}.{column.name} looks credential-bearing"
+
+
+def test_only_token_named_columns_are_counts():
+    """Guards the narrowing above: any `token` column must be an integer count."""
+    from sqlalchemy import Integer
+
+    from repobridge.infra.schemas import AnalysisChunk
+
+    for table in (AnalysisRun.__table__, AnalysisFile.__table__, AnalysisChunk.__table__):
+        for column in table.columns:
+            if "token" in column.name.lower():
+                assert isinstance(column.type, Integer), (
+                    f"{table.name}.{column.name} is named like a token but is not a count"
+                )
 
 
 async def test_no_token_value_is_written_anywhere(isolated_database, monkeypatch):

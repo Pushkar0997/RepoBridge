@@ -128,3 +128,15 @@ def file_database(tmp_path, _no_real_database):
     finally:
         set_database(previous)
         asyncio.run(database.dispose())
+
+
+@pytest.fixture(autouse=True)
+def _no_real_summariser(monkeypatch):
+    """
+    No test may call a real summarisation provider.
+
+    Same principle as `_no_real_database`: unset the key so `summarise()` short-circuits to
+    NOT_CONFIGURED rather than reaching the network. Tests that want a summary inject a
+    provider explicitly or set the key themselves.
+    """
+    monkeypatch.delenv("REPOBRIDGE_GEMINI_API_KEY", raising=False)

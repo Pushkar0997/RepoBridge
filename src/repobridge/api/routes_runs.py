@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +10,7 @@ from repobridge.core.input import (
     normalize_github_repo_url,
     RepoURLValidationError,
 )
-from repobridge.config import get_extraction_config
+from repobridge.config import get_extraction_config, get_summarization_config
 from repobridge.core.models import AnalyzeRequest
 from repobridge.core.extraction import ExtractionResult, fetch_and_extract
 from repobridge.core.github_client import (
@@ -19,6 +21,7 @@ from repobridge.core.github_client import (
     GitHubClientError,
 )
 from repobridge.core.selection import ClassificationResult, classify_tree
+from repobridge.core.summarization import ChunkRef, SummaryResult, summarise
 from repobridge.infra import storage
 from repobridge.infra.db import get_session
 
@@ -53,6 +56,10 @@ TREE_PREVIEW_LIMIT = 50
 # 37,393 entries and nobody wants those inline.
 CLASSIFICATION_SAMPLE_LIMIT = 50
 
+#: Set by tests to inject a summarisation provider. None in production, where
+#: `summarise()` uses Gemini.
+SUMMARY_PROVIDER_OVERRIDE = None
+
 
 def _extraction_payload(result: ExtractionResult | None) -> dict | None:
     """
@@ -82,6 +89,23 @@ def _extraction_payload(result: ExtractionResult | None) -> dict | None:
             {"path": f.path, "error": f.error}
             for f in result.not_fetched[:CLASSIFICATION_SAMPLE_LIMIT]
         ],
+    }
+
+
+def _summary_payload(result: SummaryResult) -> dict:
+    """
+    The prose plus the provenance that makes it checkable.
+
+    `provenance` is always present, including on NO_CONTENT and PROVIDER_ERROR: a reader
+    should be able to see what *would* have been summarised even when nothing was.
+    """
+    return {
+        "status": result.status.value,
+        "text": result.text,
+        "model": result.model,
+        "error": result.error,
+        "prompt_tokens_estimated": result.prompt_tokens_estimated,
+        "provenance": result.provenance,
     }
 
 
@@ -281,7 +305,41 @@ async def analyze_repo(
     if extraction is not None:
         await storage.persist_extraction(session, run_id, extraction)
 
-    # Step 7: build response
+    # Step 7: summarise, grounded in what was actually read.
+    # A run with no chunks never reaches the provider -- see core/summarization.py.
+    summary = await summarise(
+        repo=f"{normalized.owner}/{normalized.name}",
+        metadata={**metadata, "resolved_ref": resolved_ref},
+        run_summary={
+            "tree_entry_count": tree_entry_count,
+            "tree_truncated": tree_truncated,
+            "selected_count": len(classification_result.selected) if classification_result else 0,
+            "skipped_count": len(classification_result.skipped) if classification_result else 0,
+            "files_read": len(extraction.read) if extraction else 0,
+            "files_read_failed": len(extraction.failed) if extraction else 0,
+            "files_not_fetched": len(extraction.not_fetched) if extraction else 0,
+            "read_cap": extraction.cap if extraction else None,
+        },
+        skipped_by_reason=(
+            classification_result.counts_by_reason() if classification_result else {}
+        ),
+        chunks=[
+            ChunkRef(
+                source_path=c.source_path,
+                chunk_index=c.chunk_index,
+                chunk_type=c.chunk_type.value,
+                text=c.text,
+                token_estimate=c.token_estimate(),
+                cell_index=c.cell_index,
+            )
+            for c in (extraction.chunks if extraction else [])
+        ],
+        cfg=get_summarization_config(),
+        call_provider=SUMMARY_PROVIDER_OVERRIDE,
+    )
+    await storage.persist_summary(session, run_id, summary)
+
+    # Step 8: build response
     return {
         "run_id": run_id,
         "repo_url": str(request.repo_url),
@@ -295,6 +353,7 @@ async def analyze_repo(
         "tree_error": tree_error,
         "classification": classification,
         "extraction": _extraction_payload(extraction),
+        "summary": _summary_payload(summary),
         "metadata": {
             "full_name": metadata.get("full_name"),
             "private": metadata.get("private"),
@@ -338,6 +397,14 @@ def _run_summary(run) -> dict:
             "selected_count": run.selected_count,
             "skipped_count": run.skipped_count,
             "failed_count": run.failed_count,
+        },
+        "summary": {
+            "status": run.summary_status,
+            "text": run.summary_text,
+            "model": run.summary_model,
+            "error": run.summary_error,
+            "prompt_tokens_estimated": run.summary_prompt_tokens,
+            "provenance": json.loads(run.summary_provenance) if run.summary_provenance else None,
         },
         "extraction": {
             "selected_total": run.selected_count,
@@ -396,3 +463,28 @@ async def get_run(run_id: str, session: AsyncSession = Depends(get_session)):
         ),
     }
     return summary
+
+
+@router.get("/runs/{run_id}/summary", response_class=JSONResponse)
+async def get_run_summary(run_id: str, session: AsyncSession = Depends(get_session)):
+    """
+    The stored summary and the provenance recorded with it.
+
+    Returned together deliberately: the prose is only trustworthy to the extent a reader
+    can check it against what was actually read.
+    """
+    run = await storage.get_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
+
+    return {
+        "run_id": run.id,
+        "repo": f"{run.owner}/{run.name}",
+        "run_status": run.status,
+        "status": run.summary_status,
+        "text": run.summary_text,
+        "model": run.summary_model,
+        "error": run.summary_error,
+        "prompt_tokens_estimated": run.summary_prompt_tokens,
+        "provenance": json.loads(run.summary_provenance) if run.summary_provenance else None,
+    }

@@ -181,6 +181,46 @@ For each analysis run:
      - avoid claims about skipped or unseen content,
      - acknowledge limitations when coverage is sparse.
    - Summaries must be grounded in extracted text and metadata only.
+   - **Every summary carries machine-readable provenance** stating what was read and what
+     was not, so a reader can check the prose against the inventory without trusting it.
+   - **A run with no extracted content produces no summary.** A degraded run (metadata
+     succeeded, tree failed) says so plainly rather than summarising from metadata.
+
+   #### Amendment — 2026-08-18: LLM provider
+
+   **Decision: Google Gemini via AI Studio, model `gemini-3.7-flash`.** One provider, no
+   adapter abstraction — the provider call is isolated in `core/summarization.py` so
+   generalising later is cheap, but the interface is designed against one real integration
+   rather than guessed at in advance.
+
+   **Why not Groq.** Groq's free tier runs at roughly 6,000–12,000 tokens per minute. A
+   repository summary prompt exceeds that in a *single request*: `psf/requests` produces
+   104 chunks and `quantum-toybox` 127, and even a modest budget puts tens of thousands of
+   tokens in one call. The provider would rate-limit on the first request for any real
+   repository, which is not a tuning problem but a wrong-tool problem.
+
+   **Why Gemini Flash.** ~1M tokens/minute and a 1,048,576-token context window, so a
+   whole small-to-medium repository's extracted text fits in one request without a
+   map-reduce stage. That keeps the grounding story simple: one prompt, one inventory, one
+   summary, and nothing summarised from a summary.
+
+   **Model selection is verified, not assumed.** Model IDs change. `gemini-2.5-flash` is
+   still *listed* by the models endpoint but returns HTTP 404 — "no longer available to new
+   users" — when called. The listing endpoint is therefore not sufficient; a candidate must
+   be exercised. `gemini-3.7-flash` was confirmed working on 2026-08-18.
+
+   **The trade-off, recorded deliberately: Google's free tier permits using submitted
+   prompts to improve their models.** Repository content sent for summarisation may be used
+   for training.
+
+   This is **acceptable for v0.1 and only because v0.1 is public repositories only** —
+   the content is already public, so nothing is disclosed that was not already disclosed.
+
+   **It would NOT be acceptable if private repository support is ever added.** Private repo
+   support must not ship on a free-tier key whose terms permit training on submitted
+   content. Whoever implements private repos must either move to a paid tier with training
+   disabled, or to a provider whose terms forbid it, *before* the first private repository
+   is read. This is a blocking prerequisite, not a follow-up task.
 
 7. **Diagnostics**
    - Log key stages and decisions:

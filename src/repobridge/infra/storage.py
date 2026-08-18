@@ -11,6 +11,7 @@ reconstructible from rows alone.
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any, Iterable, Sequence
 
@@ -410,3 +411,49 @@ async def chunk_counts_by_type(session: AsyncSession, run_id: str) -> dict[str, 
         .order_by(func.count().desc())
     )
     return {chunk_type: count for chunk_type, count in (await session.execute(stmt)).all()}
+
+
+async def persist_summary(session: AsyncSession, run_id: str, result) -> None:
+    """
+    Store the summary alongside its provenance.
+
+    The provenance is stored as JSON rather than recomputed on read: it records what the
+    inventory was *at the time the summary was generated*, which is the only thing that
+    makes the prose checkable.
+    """
+    await session.execute(
+        update(AnalysisRun)
+        .where(AnalysisRun.id == run_id)
+        .values(
+            summary_status=result.status.value,
+            summary_text=result.text,
+            summary_model=result.model,
+            summary_error=result.error,
+            summary_provenance=json.dumps(result.provenance) if result.provenance else None,
+            summary_prompt_tokens=result.prompt_tokens_estimated or None,
+        )
+    )
+    await session.commit()
+
+
+async def chunks_for_summary(session: AsyncSession, run_id: str) -> list:
+    """Every chunk of a run, as the lightweight refs the summariser wants."""
+    from repobridge.core.summarization import ChunkRef
+
+    stmt = (
+        select(AnalysisChunk)
+        .where(AnalysisChunk.run_id == run_id)
+        .order_by(AnalysisChunk.source_path, AnalysisChunk.chunk_index, AnalysisChunk.id)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return [
+        ChunkRef(
+            source_path=r.source_path,
+            chunk_index=r.chunk_index,
+            chunk_type=r.chunk_type,
+            text=r.text,
+            token_estimate=r.token_estimate,
+            cell_index=r.cell_index,
+        )
+        for r in rows
+    ]
