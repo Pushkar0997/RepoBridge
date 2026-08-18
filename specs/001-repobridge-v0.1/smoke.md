@@ -16,11 +16,11 @@ the answer to "where do we stand". Update it whenever a run is added.
 | Repo | Latest run | Date | Entries | Selected | Skipped | Rows stored | Files read | Chunks | Leading skip reason |
 |---|---|---|---|---|---|---|---|---|---|
 | `kubernetes/kubernetes` | Run 5 | 2026-08-18 | 37393 | 8376 | 22924 | 37393 | not read | — | `unsupported_extension` (17167) |
-| `github/docs` | Run 4 | 2026-08-17 | 14901 | 11215 | 2227 | not stored | not read | — | `non_text_asset` (1814) |
+| `github/docs` | Run 8 | 2026-08-18 | 14903 | 11217 | 2227 | 14903 | 200 of 11217 | 198 | `non_text_asset` (1814) |
 | `twitter/twemoji` | Run 3 | 2026-08-17 | 7413 | 17 | 7389 | not stored | not read | — | `non_text_asset` (7378) |
-| `psf/requests` | Run 6 | 2026-08-18 | 153 | 107 | 23 | 153 | 107 of 107 | 104 | `unsupported_extension` (16) |
+| `psf/requests` | Run 8 | 2026-08-18 | 153 | 107 | 23 | 153 | 107 of 107 | 104 | `unsupported_extension` (16) |
 | `Pushkar0997/quantum-toybox` | Run 7 | 2026-08-18 | 40 | 30 | 0 | 40 | 30 of 30 | 127 | — (nothing skipped) |
-| `octocat/Hello-World` | Run 4 | 2026-08-17 | 1 | 1 | 0 | not stored | not read | — | — (nothing skipped) |
+| `octocat/Hello-World` | Run 8 | 2026-08-18 | 1 | 1 | 0 | 1 | 1 of 1 | 1 | — (nothing skipped) |
 | `Pushkar0997/definitely-not-a-real-repo-zzz` | Run 1 | 2026-08-17 | — | — | — | — | — | — | 404 at metadata, as intended |
 
 Every repo in the suite has been classified. "Rows stored" reads *not stored* for repos last
@@ -41,6 +41,7 @@ tree entry has gone unaccounted for in any run, at any scale tried.
 | Run 5 | 2026-08-18 | Persistence and the UI: runs stored and read back, two-process restart, tree-page scale honesty |
 | Run 6 | 2026-08-18 | Extraction: content read and chunked, notebook flattening verified against source, connection pooling measured |
 | Run 7 | 2026-08-18 | Summarisation on the new default model, through the new re-summarise endpoint; one live provider request |
+| Run 8 | 2026-08-18 | Four summaries chosen to exercise partial coverage; the read cap hit live for the first time; one overgeneralisation found |
 
 ---
 
@@ -514,3 +515,207 @@ every claim checkable against the inventory above.
   before and after ~32 real calls. Its figures are not an accounting source and the
   "calls spent" arithmetic in this run's script is therefore meaningless; the request log
   is the evidence.
+
+
+---
+
+### Run 8 — 2026-08-18: four summaries against partial coverage (Milestone 6 closing runs)
+
+- **Quota, GitHub:** authenticated, 5000/hour. `/rate_limit` again reported `used 31`
+  unchanged across ~340 real calls, so it is again not an accounting source; the true cost
+  is derivable: 22 + 202 + 3 + 109 = **336 calls**.
+- **Quota, Gemini:** **four** summaries, one per case, on `gemini-3.5-flash-lite`. No case
+  was retried by hand. **Five HTTP attempts were made**: the fourth case returned a
+  transient 429 on its first attempt and the retry policy cleared it after a 16.0 s wait
+  (`Summarisation attempt 1/3 returned status 429; retrying in 16.0s`), which is why that
+  case took 22.2 s against ~2 s for the others. **First live exercise of the retry path**,
+  and evidence the daily/per-minute discrimination works: a daily-quota 429 would have
+  failed fast instead.
+- **Purpose:** close the Milestone 6 PARTIALs, all of which came from having exactly one
+  live summary, on a run with complete coverage and nothing to disclose. Each case here
+  exercises a limitation the stub tests cannot reach.
+- **Method:** in-process `TestClient` against a scratch database outside the repo. Every
+  case analysed with `REPOBRIDGE_GEMINI_API_KEY` **withheld**, so the analyse step stored
+  the run without touching the provider, then spent exactly one request through
+  `POST /api/runs/{id}/summarize`.
+
+| Case | Repo | Selected | Read | Chunks sent | `is_partial` | Limitations | Prose acknowledged them |
+|---|---|---|---|---|---|---|---|
+| capped | `psf/requests` (cap 20) | 107 | **20** | 20 of 20 | true | 2 | **yes**, with exact figures |
+| large partial | `github/docs` | 11217 | **200** | **116 of 198** | true | 3 | **yes**, both figures exact |
+| sparse | `octocat/Hello-World` | 1 | 1 | 1 of 1 | false | 0 | **yes** — refused to characterise |
+| full code | `psf/requests` | 107 | 107 | **84 of 104** | true | 2 | **yes**, chunk figure exact |
+
+**The read cap fired live for the first time**, on two cases. It has been test-only since
+Milestone 5. `accounts_for_every_selected_file` was `true` on all four:
+`107 == 20 + 0 + 87` and `11217 == 200 + 0 + 11017`.
+
+Two cases also hit the **token budget** for the first time live — 82 chunks dropped for
+`github/docs`, 20 for `psf/requests` at full coverage — which had likewise only ever been
+exercised against mocks.
+
+#### The summaries, and what each disclosed
+
+**capped — `psf/requests`, 20 of 107 files.** Opened:
+
+> "Coverage is partial: out of 153 repository entries and 107 selected readable files,
+> exactly 20 files were read, and non-text assets and unsupported extensions were skipped."
+
+Every number matches the provenance. It then described contribution guidelines, issue
+templates, a security disclosure process, a code of conduct, CODEOWNERS, and workflows for
+tests, linting, type checking, CodeQL, thread locking, issue autoclosing and PyPI
+publishing — **and concluded that "the project organisation is heavily structured around
+GitHub infrastructure and automation".** See the finding below.
+
+**large partial — `github/docs`, 200 of 11,217 files.** Opened:
+
+> "Coverage is partial, as 11,017 selected files were not read due to a read limit of 200
+> files, and 82 extracted chunks exceeded the token budget."
+
+Both limitations, both exact, in the first sentence. Despite reading **1.8%** of the
+repository it identified the real shape of the project — the Next.js/TypeScript
+application, Markdown articles under `content/`, the `docs-internal` split, and the Moda
+and Kubernetes deployment configuration.
+
+**sparse — `octocat/Hello-World`, one file.** The case with no mechanical limitation to
+lean on (`is_partial: false`, `limitations: []`), so honesty here is the model's alone:
+
+> "The content is extremely sparse and consists only of a README file containing that short
+> greeting. … Because the repository inventory contains only a single readable entry and no
+> other files, modules, dependencies, licences, or code structures are mentioned in the
+> provided text or inventory, it is not possible to further characterise the repository or
+> its organisation."
+
+This is `SYSTEM_INSTRUCTIONS` rule 5 obeyed exactly: it declined to characterise rather
+than padding. **The strongest result of the run**, and the one the previous verdict most
+needed.
+
+**full code — `psf/requests`, 107 of 107 files.** Same repository as the capped case, so
+coverage is the only variable:
+
+> "Coverage of this repository is partial, as 20 extracted chunks were omitted from the
+> model token budget… The codebase is organised into a main source directory containing
+> core logic modules such as api.py, sessions.py, models.py, adapters.py, auth.py, and
+> utils.py, alongside a comprehensive documentation directory and a test suite."
+
+#### Mechanical audit
+
+Claims were checked against **the text the model actually saw**, not against everything
+stored — `rank_chunks` and `select_within_budget` are deterministic, so the exact prompt
+content is reconstructible from the database. That distinction matters here: two runs sent
+only part of their chunks, and a claim grounded in a dropped chunk is not grounded.
+Reconstruction matched the recorded `chunks_included` and token count exactly on all four.
+
+| Case | Claims checked | Unsupported | Filenames asserted | Verdict |
+|---|---|---|---|---|
+| capped | 15 | 0 | none | all traced |
+| large partial | 16 | 0 | none real (see below) | all traced |
+| sparse | 2 | 0 | none | all traced |
+| full code | 15 | 0 | 6, **all read** | all traced |
+
+`api.py`, `sessions.py`, `models.py`, `adapters.py`, `auth.py`, `utils.py` were each
+checked against `analysis_files`: all six exist and all six have `content_status = read`.
+**No summary named a file it had not read, and no summary named a file that does not
+exist.**
+
+**Two audit flags were raised and both were defects in the audit, not the summaries.**
+Recorded because an audit that is not itself audited is worth little:
+
+- *"simple, yet elegant HTTP library" reported missing.* The source reads "A simple, yet
+  elegant, HTTP library." — an extra comma the search term lacked. In the full-coverage run
+  it is in `README.md`, which was read. In the **capped** run `README.md` was
+  `not_fetched` and the string appears in **zero** read chunks: there it came from the
+  **GitHub metadata description**, which `build_prompt` supplies explicitly labelled
+  "Description (from GitHub metadata)". Rule 4 permits naming things from the content *or
+  the inventory*, so this is grounded — but grounded in metadata, which the prose states as
+  flatly as if it had been read.
+- *"Next.js" reported as a filename not in the repository.* The filename regex parsed the
+  framework name as a `.js` file. It appears in 6 read chunks. False positive.
+
+#### FINDING — a capped summary generalised from an unrepresentative sample
+
+**The most important result of this run, and a negative one.**
+
+The read cap takes the *first* N selected files in classification order, which is GitHub's
+tree order, which is roughly alphabetical. For `psf/requests` with a cap of 20, those 20
+are:
+
+```
+.coveragerc, .git-blame-ignore-revs,
+.github/AI_POLICY.md, .github/CODEOWNERS, .github/CODE_OF_CONDUCT.md,
+.github/CONTRIBUTING.md, .github/FUNDING.yml, .github/ISSUE_TEMPLATE.md,
+.github/ISSUE_TEMPLATE/{Bug_report,Custom,Feature_request}.md, .github/SECURITY.md,
+.github/dependabot.yml,
+.github/workflows/{close-issues,codeql-analysis,lint,lock-issues,publish,run-tests,typecheck}.yml
+```
+
+**18 of 20 are `.github/`.** `README.md` was not read. Every file of
+`src/requests/` — `api.py`, `sessions.py`, `models.py`, `adapters.py`, `auth.py` — was
+`not_fetched`. The summary then stated:
+
+> "The project organisation is heavily structured around GitHub infrastructure and
+> automation."
+
+**Every individual fact in that summary is grounded. The characterisation is not.** It is a
+claim about *the project's organisation* inferred from a sample that is 90% one directory,
+and it is materially wrong about `psf/requests`, whose organisation is `src/requests/`,
+`docs/` and `tests/`. A reader who skims past the first sentence comes away misinformed
+about what the library is.
+
+**This is not a summarisation defect.** The summariser disclosed the sample size accurately
+and in the first sentence, invented nothing, and named no unread file. The defect is
+**which 20 files the cap chose** — precisely the open item recorded in `plan.md` under
+"Milestone 5 — open item: which 200 files a capped run reads", which predicted that a
+capped run "would be grounded in the wrong 2%". **This run confirms that prediction live,
+on a real repository, for the first time.**
+
+The `github/docs` case is the control that proves the point is about *ranking*, not about
+partial coverage as such: it read 1.8% and still characterised the repository correctly,
+because `github/docs` is docs-shaped all the way down, so an alphabetical slice happens to
+be representative. `psf/requests` is not, and the alphabetical slice is its CI shell.
+
+**The fix already exists in the codebase.** `core/summarization.py:rank_chunks` ranks
+*chunks* for the prompt by how much they explain a repository — README first, shallow
+before deep, `docs/` ahead of `.github/`. Nothing equivalent ranks *files* for reading. The
+cap should select files the same way, at which point the capped `psf/requests` run would
+read `README.md` and `src/requests/` rather than the issue templates.
+
+#### Rubric
+
+Scored on the same five dimensions as Run 7.
+
+| Case | Grounding | Coverage | Clarity | Honesty | Usefulness | Mean |
+|---|---|---|---|---|---|---|
+| capped `psf/requests` | 4 | 2 | 5 | 3 | 2 | **3.2** |
+| large partial `github/docs` | 5 | 4 | 5 | 5 | 5 | **4.8** |
+| sparse `Hello-World` | 5 | 5 | 5 | 5 | 4 | **4.8** |
+| full code `psf/requests` | 5 | 5 | 5 | 4 | 5 | **4.8** |
+
+Notes on the scores that are not 5:
+
+- **capped, Grounding 4** — the opening characterisation of the library came from metadata
+  rather than from anything read, stated without that distinction.
+- **capped, Coverage 2 / Usefulness 2** — as a description of the 20 files read it is
+  complete; as a description of `psf/requests` it is wrong. Usefulness is scored against
+  what a reader needs, and a reader needs to know this is an HTTP library.
+- **capped, Honesty 3** — the disclosure was exact and up front, which is worth a lot; the
+  unqualified generalisation that followed is what costs it.
+- **large partial, Coverage 4** — correct about the shape, necessarily thin on specifics
+  at 1.8%.
+- **sparse, Usefulness 4** — there is nothing useful to say about this repository, and it
+  says so quickly and truthfully, which is the best available outcome.
+- **full code, Honesty 4** — exact on the 20 dropped chunks, but "several non-text and
+  unsupported files" where the provenance says 7 and 16.
+
+#### Limitations of this run
+
+- **One model.** All five live summaries to date are `gemini-3.5-flash-lite`. Nothing
+  compares against `gemini-3.7-flash`, and the model is configurable, so a reader may be
+  running one no run has evaluated.
+- **The 429 was not deliberately provoked** and its exact quota was not inspected — the
+  retry cleared it and the run continued, which is the designed behaviour. It confirms the
+  retry path works live; it does not measure the per-minute limit.
+- **Truncation remains mock-only.** `github/docs` at 14,903 entries was still not truncated
+  by GitHub.
+- **No `no_content` or `provider_error` summary was generated live** in this run; both are
+  covered by tests and by Run 7's `not_configured` analyse step.

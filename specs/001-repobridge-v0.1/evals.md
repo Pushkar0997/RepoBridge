@@ -707,6 +707,98 @@ pass — the pattern Milestone 3 used when its two PARTIALs were closed.
 - **The token estimate is `chars//4`**, so `tokens_estimated` in any provenance is
   approximate and is labelled as such in the record itself.
 
+#### Second pass — 2026-08-18: four PARTIALs closed, one criterion downgraded
+
+The four runs the first pass asked for were made — `smoke.md` Run 8, four summaries, four
+provider requests, one per case. Test suite at time of this pass: **414 passing**.
+
+**Every coverage PARTIAL closes.** All four rested on the same gap: one live summary, on a
+run with complete coverage and nothing to disclose. There are now five live summaries
+across four repositories, three of them partially covered.
+
+| Criterion | Was | Now | Why |
+|---|---|---|---|
+| Summary mentions limitations when coverage is sparse (plan E3) | PARTIAL | **PASS** | Three of the four runs had limitations; all three stated them in the first sentence with figures from the provenance. `psf/requests` capped: "out of 153 repository entries and 107 selected readable files, exactly 20 files were read". `github/docs`: "11,017 selected files were not read due to a read limit of 200 files, and 82 extracted chunks exceeded the token budget" |
+| Run summary on known repos (plan V1) | PARTIAL | **PASS** | Five summaries, four repositories, four different shapes: notebooks, a capped code repo, a 14,903-entry docs site read at 1.8%, and a one-file repo |
+| Verify limitation handling (plan V3) | PARTIAL | **PASS** | The read cap and the token budget both fired live for the first time — cap on two runs, budget on two — and both were disclosed in provenance and in prose |
+| Summary acknowledges limited coverage when sparse or partially unreadable (evals) | PARTIAL | **PASS** | The `octocat/Hello-World` case is the decisive one: `is_partial: false` and `limitations: []`, so there was no mechanical limitation to lean on, and the model still wrote "it is not possible to further characterise the repository or its organisation" rather than padding. That is `SYSTEM_INSTRUCTIONS` rule 5 obeyed with nothing forcing it |
+| Limitations are clearly stated when needed (evals success) | PARTIAL | **PASS** | as above |
+| Rubric scored across several repos (evals) | PARTIAL | **PASS** | Five summaries scored; four in Run 8 at 3.2, 4.8, 4.8, 4.8 |
+| **No summary claims about unseen files (evals success)** | **PASS** | **PARTIAL** | **Downgraded. See the finding below.** |
+
+#### The finding that downgrades a criterion
+
+**A capped summary generalised from an unrepresentative sample.** Full detail in `smoke.md`
+Run 8; the essentials:
+
+`psf/requests` capped at 20 files read **18 `.github/` files** plus `.coveragerc` and
+`.git-blame-ignore-revs`, because the cap takes the alphabetically-first N selected files.
+`README.md` and every module of `src/requests/` were `not_fetched`. The summary disclosed
+that accurately — exact figures, first sentence — and then wrote:
+
+> "The project organisation is heavily structured around GitHub infrastructure and
+> automation."
+
+**Every individual fact in that summary is grounded; the characterisation is not.** It
+describes the organisation of a project 81% of whose readable files were never opened, and
+it is materially wrong about `psf/requests`, whose organisation is `src/requests/`, `docs/`
+and `tests/`. The mechanical audit found no invented file, no invented module and no named
+file that was not read — the failure is not hallucination, it is **overgeneralisation from
+a sample the run itself knew was partial**.
+
+Judged against the criterion "no summary claims about unseen files", this is a claim whose
+subject is the whole repository while its evidence covers a fifth of it. It does not
+violate the letter of `SYSTEM_INSTRUCTIONS` — no unread file is named or speculated about —
+which is exactly why it is recorded rather than dismissed: **the rules as written permit a
+summary that misleads.**
+
+**The cause is not the summariser.** The control case proves it: `github/docs` read **1.8%**
+and characterised the repository correctly, because a docs site is docs-shaped throughout,
+so an alphabetical slice is representative. `psf/requests` is not, and its alphabetical
+slice is the CI shell. The variable is **which files the cap chose**, which is the open item
+already recorded in `plan.md` under "Milestone 5 — open item: which 200 files a capped run
+reads", predicting a summary "grounded in the wrong 2%". Run 8 is that prediction confirmed
+live on a real repository.
+
+#### Milestone 6 status — **NOT CLOSED**, 2026-08-18 (second pass)
+
+**Every Milestone 6 criterion now passes except one, and the one that does not is the
+finding above.** Stated plainly: the summarisation machinery is correct and, on four of five
+live summaries, genuinely good. Grounding enforcement is model-independent and holds. The
+sparse case — the one most likely to produce a confident fabrication — produced a refusal to
+characterise instead, which is the best result available. Zero hallucinations across five
+summaries and 48 mechanically checked claims.
+
+It does not close because a summary this project generated **would mislead a reader about
+what `psf/requests` is**, and shipping a milestone whose stated purpose is grounded,
+trustworthy summaries while holding that result would be recording the wrong thing. The
+finding is worth more than the milestone: it is a real defect, found by evaluation rather
+than reasoning, on the exact case that was predicted and had never been run.
+
+**What closes it — one change, then one re-run:**
+
+1. **Rank files for reading the way chunks are ranked for the prompt.**
+   `core/summarization.py:rank_chunks` already implements the ranking — README and orienting
+   documents first, shallow before deep, `docs/` ahead of `.github/` and `tests/`. Nothing
+   equivalent orders the *files* the cap selects; `core/extraction.py` takes a prefix of
+   classification order. Applying the same ranking there is the fix, and it closes the
+   Milestone 5 open item at the same time.
+2. **Re-run the capped `psf/requests` case** and confirm the summary describes an HTTP
+   library rather than a CI configuration. One provider request.
+
+Until then the honest statement of where this stands: **RepoBridge's summaries are grounded
+and honest about how much they read; a capped summary is not yet reliably representative of
+what it read from.** Those are different properties and only the first is currently earned.
+
+**Caveats carried forward regardless:**
+- **One model.** All five live summaries are `gemini-3.5-flash-lite`.
+- **Truncation disclosure remains mock-only**; `github/docs` at 14,903 entries was still not
+  truncated by GitHub.
+- **The token estimate is `chars//4`**, labelled as a heuristic in every provenance record.
+- **The retry path is now live-verified**, incidentally: the fourth run took a transient 429,
+  waited 16.0 s and succeeded. A daily-quota 429 would have failed fast instead, which is the
+  discrimination that matters.
+
 ---
 
 ## Milestone 7 – Diagnostics evals
