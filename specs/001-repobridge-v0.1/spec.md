@@ -209,6 +209,28 @@ For each analysis run:
    users" — when called. The listing endpoint is therefore not sufficient; a candidate must
    be exercised. `gemini-3.7-flash` was confirmed working on 2026-08-18.
 
+   **Correction, same day: the binding free-tier constraint is requests per day, not
+   tokens per minute.** The comparison above weighed throughput, which is the right axis
+   for Groq but not the one that limits Gemini. Measured from an actual 429 response, the
+   free tier enforces `GenerateRequestsPerDayPerProjectPerModel-FreeTier` with a value of
+   **20 — twenty generate requests per day, per model, per project.**
+
+   That does not change the decision: 20 requests/day is workable for a local single-user
+   tool that summarises a repository once, and Groq's token ceiling would still reject a
+   single request. But it changes what "free tier" means in practice, and two consequences
+   follow:
+
+   - **Development and testing burn the same quota as real use.** Twenty diagnostic calls
+     exhaust a model for the day. Tests must never call the provider; they do not.
+   - **The quota is per model**, so a second Flash model is a legitimate fallback when one
+     is exhausted — and is how the Milestone 6 live verification was completed after
+     diagnostics consumed `gemini-3.7-flash`'s daily allowance.
+
+   Transient `503 "This model is currently experiencing high demand"` is also common on
+   this tier and is not correlated with request size or output limit — verified by
+   repeating identical calls and observing them alternate between 200 and 503. RepoBridge
+   does not retry; a provider failure is recorded and the run survives intact.
+
    **The trade-off, recorded deliberately: Google's free tier permits using submitted
    prompts to improve their models.** Repository content sent for summarisation may be used
    for training.

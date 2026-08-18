@@ -47,3 +47,5 @@ dist/
 .DS_Store
 Thumbs.db
 commit-msg.txt
+
+.m6_run_id
