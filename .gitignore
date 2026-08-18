@@ -46,3 +46,4 @@ dist/
 # OS / misc
 .DS_Store
 Thumbs.db
+commit-msg.txt
