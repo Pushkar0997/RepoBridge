@@ -19,7 +19,16 @@ __pycache__/
 # Logs
 *.log
 
+# Local SQLite database (default REPOBRIDGE_DATABASE_URL target) and its
+# write-ahead-log sidecars
+repobridge.db
+repobridge.db-wal
+repobridge.db-shm
+*.db-wal
+*.db-shm
+
 # Coverage / test artifacts
+.pytest_cache/
 htmlcov/
 .coverage
 .coverage.*

@@ -13,17 +13,19 @@ repos for smoke tests" — with recorded outcomes rather than a single ad-hoc ch
 Latest recorded result per repo. The run log below is the historical record; this table is
 the answer to "where do we stand". Update it whenever a run is added.
 
-| Repo | Latest run | Date | Entries | Selected | Skipped | Leading skip reason |
-|---|---|---|---|---|---|---|
-| `kubernetes/kubernetes` | Run 4 | 2026-08-17 | 37393 | 8376 | 22924 | `unsupported_extension` (17167) |
-| `github/docs` | Run 4 | 2026-08-17 | 14901 | 11215 | 2227 | `non_text_asset` (1814) |
-| `twitter/twemoji` | Run 3 | 2026-08-17 | 7413 | 17 | 7389 | `non_text_asset` (7378) |
-| `psf/requests` | Run 3 | 2026-08-17 | 153 | 107 | 23 | `unsupported_extension` (16) |
-| `Pushkar0997/quantum-toybox` | Run 3 | 2026-08-17 | 40 | 30 | 0 | — (nothing skipped) |
-| `octocat/Hello-World` | Run 4 | 2026-08-17 | 1 | 1 | 0 | — (nothing skipped) |
-| `Pushkar0997/definitely-not-a-real-repo-zzz` | Run 1 | 2026-08-17 | — | — | — | 404 at metadata, as intended |
+| Repo | Latest run | Date | Entries | Selected | Skipped | Rows stored | Leading skip reason |
+|---|---|---|---|---|---|---|---|
+| `kubernetes/kubernetes` | Run 5 | 2026-08-18 | 37393 | 8376 | 22924 | 37393 | `unsupported_extension` (17167) |
+| `github/docs` | Run 4 | 2026-08-17 | 14901 | 11215 | 2227 | not stored | `non_text_asset` (1814) |
+| `twitter/twemoji` | Run 3 | 2026-08-17 | 7413 | 17 | 7389 | not stored | `non_text_asset` (7378) |
+| `psf/requests` | Run 5 | 2026-08-18 | 153 | 107 | 23 | 153 | `unsupported_extension` (16) |
+| `Pushkar0997/quantum-toybox` | Run 5 | 2026-08-18 | 40 | 30 | 0 | 40 | — (nothing skipped) |
+| `octocat/Hello-World` | Run 4 | 2026-08-17 | 1 | 1 | 0 | not stored | — (nothing skipped) |
+| `Pushkar0997/definitely-not-a-real-repo-zzz` | Run 1 | 2026-08-17 | — | — | — | — | 404 at metadata, as intended |
 
-Every repo in the suite has now been classified; there are no unmeasured cells left.
+Every repo in the suite has been classified. "Rows stored" reads *not stored* for repos last measured
+before persistence existed (Runs 3 and 4) — their classification figures are still valid, they
+simply predate the database.
 
 **The accounting identity holds on every one of them**, including `kubernetes/kubernetes` at
 37,393 entries: `6093 + 8376 + 22924 + 0 == 37393`, with `accounts_for_every_entry: true`. No
@@ -35,6 +37,7 @@ tree entry has gone unaccounted for in any run, at any scale tried.
 | Run 2 | 2026-08-17 | Milestone 3 classification, first spec amendment |
 | Run 3 | 2026-08-17 | Binary-heavy repo added; second spec amendment re-measured |
 | Run 4 | 2026-08-17 | Classification backfilled for the three Run 1 repos; identity tested at 37,393 entries |
+| Run 5 | 2026-08-18 | Persistence and the UI: runs stored and read back, two-process restart, tree-page scale honesty |
 
 ---
 
@@ -46,7 +49,7 @@ it fails at the metadata step. A full pass is ~13 calls.
 **A token is strongly recommended.** Without `REPOBRIDGE_GITHUB_TOKEN` set you are on the
 unauthenticated 60/hour per-IP quota, which a full pass will exhaust if anything else has used
 it — that is exactly what happened during the first attempt at Run 1, recorded below. With a
-token the quota is 5000/hour. **Runs 1 through 4 were all authenticated at 5000/hour.**
+token the quota is 5000/hour. **Runs 1 through 5 were all authenticated at 5000/hour.**
 
 ```bash
 export REPOBRIDGE_GITHUB_TOKEN=your_token_here
@@ -306,6 +309,66 @@ observed on a real repository.
   a docs site is mostly Markdown. Its leading skip reason is `non_text_asset` (1,814 images).
 - Neither large repo was truncated by GitHub, so `tree_truncated` remains mock-only even at
   37,393 entries.
+
+---
+
+### Run 5 — 2026-08-18: persistence and the UI (Milestone 4)
+
+- **Quota:** authenticated, 5000/hour (`REPOBRIDGE_GITHUB_TOKEN` set). Token never read or
+  logged.
+- **Purpose:** exercise the stored path end to end — analyse through the API, read the run
+  back, and render it in the UI — and check that the tree page tells the truth about how much
+  of a large repository it is showing.
+- **Method:** in-process `TestClient` against a scratch database outside the repo.
+
+| Repo | Entries | Rows stored | Dirs | Selected | Skipped | Identity | Tree page, page 1 |
+|---|---|---|---|---|---|---|---|
+| `Pushkar0997/quantum-toybox` | 40 | 40 | 10 | 30 | 0 | yes | `Showing 1–40 of 40 entries.` |
+| `psf/requests` | 153 | 153 | 23 | 107 | 23 | yes | `Showing 1–100 of 153 entries.` |
+| `kubernetes/kubernetes` | 37393 | 37393 | 6093 | 8376 | 22924 | yes | `Showing 1–100 of 37393 entries.` |
+
+Stored row counts equal the entry counts the analyze response reported, for all three. The
+API-reported `stored_identity_holds` was `true` in every case.
+
+**Two-process restart.** The criterion is "a run survives a restart", so it was tested with
+two separate interpreters rather than a disposed engine:
+
+```
+process 1 (pid 19172): created run 884e4eb3… for psf/requests, 153 entries, then exited
+process 2 (pid 17868): GET /api/runs total = 1
+                       run reopened: psf/requests, status completed
+                       stored rows 153, identity true, dirs 23 / sel 107 / skip 23
+                       home page lists it: yes
+                       tree page: HTTP 200, 153 rows
+```
+
+Nothing was lost across the process boundary.
+
+**Tree-page scale honesty, `kubernetes/kubernetes` (37,393 entries).** The full table is in
+`evals.md` under the Milestone 4 verdict. The essential results:
+
+| View | Scope line |
+|---|---|
+| page 1 | `Showing 1–100 of 37393 entries.` |
+| last page | `Showing 37301–37393 of 37393 entries.` |
+| `path=staging/src/k8s.io/api/core/v1/types.go` | `Showing 1–1 of 1 matching entries (of 37393 in this run).` |
+| `path=go.mod` | `Showing 1–39 of 39 matching entries (of 37393 in this run).` |
+| `path=vendor/golang.org` | `Showing 1–100 of 1007 matching entries (of 37393 in this run).` |
+| `path=OWNERS` | `Showing 1–100 of 604 matching entries (of 37393 in this run).` |
+| `path=vendor/` + `status=skipped` | `Showing 1–100 of 5574 matching entries (of 37393 in this run).` |
+
+The single-file lookup returned `staging/src/k8s.io/api/core/v1/types.go` as
+`skipped / unsupported_extension` with its message — the product's core question
+("was this file skipped, and why") answered in one query against a 37,393-entry repository.
+
+**Limitations of this run**
+
+- `github/docs`, `twitter/twemoji` and `octocat/Hello-World` were not re-run through
+  persistence; their figures in the index are from Runs 3–4 and predate the database.
+- No repository has yet been truncated by GitHub, so the truncation banner remains covered by
+  tests only.
+- Deep pagination was exercised (last page of 374) but not timed; offset scanning is known to
+  degrade and was not measured here.
 
 ---
 

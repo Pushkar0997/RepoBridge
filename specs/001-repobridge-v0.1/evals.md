@@ -384,6 +384,79 @@ Scope moved out of Milestone 2 by the 2026-08-17 amendment in `plan.md`.
 
 ---
 
+### Recorded verdict — 2026-08-18
+
+Judged against the code as it stands. A criterion is PASS only where a test or a recorded
+live result backs it. Test suite at time of judging: **223 passing**. Live results are
+`smoke.md` Run 5.
+
+| Criterion | Source | Verdict | Evidence |
+|---|---|---|---|
+| SQLite persistence in `infra/schemas.py` and `infra/db.py` | plan D1 | PASS | `infra/schemas.py` (2 tables), `infra/db.py` (engine/session), `infra/storage.py` (reads/writes) |
+| A run record is created when `/api/analyze` runs | plan D2 | PASS | `routes_runs.py`; `test_analyze_returns_a_run_id_and_stores_the_run`; live 3/3 repos in Run 5 |
+| A tree view in the UI, reading from the database | plan D3 | PASS | `templates/tree.html`, route in `main.py`; `test_tree_page_states_what_fraction_it_shows`; live on all three repos |
+| A run survives a restart and can be reopened | plan E1 | PASS | `test_run_survives_a_restart` (file DB, engine disposed and reopened) **and** a two-process live restart recorded in `smoke.md` Run 5: run written by pid 19172, reopened intact by pid 17868 |
+| Recent runs can be listed | plan E2 | PASS | `GET /api/runs` and the home page table; `test_runs_list_is_newest_first`, `test_index_renders_and_lists_recent_runs`; live after restart |
+| Tree view reflects what was retrieved, including truncation | plan E3 | PASS | `test_tree_page_of_a_truncated_run_warns`, `test_truncated_run_detail_page_says_it_is_incomplete`. **Mock-only** — see caveat below |
+| No secrets written to the database | plan E4 | PASS | `test_schema_has_no_token_column`, `test_no_token_value_is_written_anywhere` (sets a real-shaped token and scans every stored value) |
+| Create a run, restart, confirm still listed and readable | plan V1 | PASS | two-process live restart, `smoke.md` Run 5 |
+| Stored metadata matches what the API returned | plan V2 | PASS | `test_analyze_returns_a_run_id_and_stores_the_run`; live: stored counts equal the analyze response for all three repos |
+| Tree view renders a real retrieved tree; truncation warning shown | plan V3 | PASS (render) / **mock-only** (truncation) | live render on 40, 153 and 37,393-entry repos; the truncation banner has never been exercised against a genuinely truncated repo |
+| A run is written to SQLite and survives an app restart | evals | PASS | as plan E1 |
+| Recent runs can be listed and reopened | evals | PASS | as plan E2 |
+| The tree view shows the retrieved tree for a stored run | evals | PASS | as plan D3 |
+| A truncated tree is displayed as incomplete, not as a full listing | evals | PASS | as plan E3, mock-only |
+| No token is written to the database | evals | PASS | as plan E4 |
+| Stored run metadata matches the API response | evals | PASS | as plan V2 |
+| Restarting the app loses nothing | evals | PASS | two-process restart: 153 rows, identity true, home and tree pages both render |
+| The truncation state survives persistence | evals | PASS | `test_truncated_run_persists_the_flag`, `test_truncated_tree_is_stored_and_does_not_read_back_as_complete` |
+
+#### Scale honesty — judged against `kubernetes/kubernetes`
+
+Not a plan.md criterion; added as a slice requirement because a 37,393-entry repository
+cannot render at once and a page that hides that fact would repeat the `tree_truncated`
+defect at the presentation layer.
+
+Live, `kubernetes/kubernetes`, 37,393 stored entries:
+
+| View | Scope line |
+|---|---|
+| unfiltered, page 1 | `Showing 1–100 of 37393 entries.` |
+| unfiltered, last page | `Showing 37301–37393 of 37393 entries.` |
+| `path=staging/src/k8s.io/api/core/v1/types.go` | `Showing 1–1 of 1 matching entries (of 37393 in this run).` |
+| `path=vendor/golang.org` | `Showing 1–100 of 1007 matching entries (of 37393 in this run).` |
+| `path=vendor/` + `status=skipped` | `Showing 1–100 of 5574 matching entries (of 37393 in this run).` |
+| no matches | `Showing 0 of 37393 entries in this run.` |
+
+**PASS.** The line is unconditional — rendered even when the list fits — so a reader never
+infers completeness from its absence. With any filter active it names *both* the match count
+and the run total, so `1` cannot be read as the size of the repository. The zero-match case
+still states the run total rather than an unqualified "0 entries".
+
+The path filter is what makes this usable rather than merely honest: 37,393 entries is 374
+pages of prev/next, so "was `staging/src/k8s.io/api/core/v1/types.go` skipped, and why" was
+previously answerable only through the API. It now returns one row, `skipped /
+unsupported_extension`, with its message.
+
+#### Milestone 4 status — CLOSED, 2026-08-18
+
+**Every criterion is PASS. Milestone 4 is recorded as closed.**
+
+Caveats carried forward, recorded as notes rather than blockers:
+- **The truncation banner is mock-only.** No repository retrieved so far has been truncated
+  by GitHub — the largest is 37,393 entries against a threshold near 100k. The stored flag,
+  the persistence of it, and both UI warnings are covered by tests, but the end-to-end path
+  from a genuinely truncated GitHub response to the rendered banner has never run. This is
+  the same caveat carried since Milestone 2.
+- **No migrations.** `create_all()` never alters an existing table, so a database predating
+  a schema change fails with `OperationalError` on first query rather than degrading. Deleting
+  the file is currently the fix. Acceptable only while no database holds real history.
+- **Deep offsets degrade.** Page 374 of kubernetes is measurably heavier than page 1, because
+  SQLite walks the offset. The path filter removes most of the need to page deeply, but does
+  not fix the mechanism.
+
+---
+
 ## Milestone 5 – Extraction and normalization evals
 
 ### Test set

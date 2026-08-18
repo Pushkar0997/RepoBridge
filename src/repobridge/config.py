@@ -125,3 +125,28 @@ class SelectionConfig:
 
 
 DEFAULT_SELECTION_CONFIG = SelectionConfig()
+
+
+@dataclass(frozen=True)
+class DatabaseConfig:
+    """
+    Local SQLite storage. Path comes from config, not hardcoded (AGENTS.md).
+
+    Override with REPOBRIDGE_DATABASE_URL, e.g. to point a scratch run at a temp file.
+    Must be an async driver URL: v0.1 uses sqlite+aiosqlite.
+    """
+
+    url_env_var: str = "REPOBRIDGE_DATABASE_URL"
+    default_url: str = "sqlite+aiosqlite:///./repobridge.db"
+    # Rows per executemany batch when persisting classified entries. Large repos are
+    # tens of thousands of rows; one statement per row is needlessly slow, and one
+    # statement for all of them is needlessly large.
+    insert_batch_size: int = 1_000
+
+
+DEFAULT_DATABASE_CONFIG = DatabaseConfig()
+
+
+def get_database_url(cfg: DatabaseConfig = DEFAULT_DATABASE_CONFIG) -> str:
+    """Database URL from the environment if set, else the configured default."""
+    return os.getenv(cfg.url_env_var) or cfg.default_url

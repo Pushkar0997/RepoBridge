@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from repobridge.core.input import (
     normalize_github_repo_url,
@@ -14,6 +15,8 @@ from repobridge.core.github_client import (
     GitHubClientError,
 )
 from repobridge.core.selection import ClassificationResult, classify_tree
+from repobridge.infra import storage
+from repobridge.infra.db import get_session
 
 router = APIRouter(prefix="/api", tags=["runs"])
 
@@ -83,13 +86,15 @@ def _classification_payload(result: ClassificationResult) -> dict:
 
 
 @router.post("/analyze", response_class=JSONResponse)
-async def analyze_repo(request: AnalyzeRequest):
+async def analyze_repo(
+    request: AnalyzeRequest, session: AsyncSession = Depends(get_session)
+):
     """
     Validate the incoming GitHub repo URL, normalize owner/repo, then fetch repository
     metadata and the git tree for the resolved ref.
 
-    v0.1: this endpoint does not yet perform full analysis (no selection, extraction, or
-    persistence); it confirms the repo is reachable and reports what the tree lookup saw.
+    v0.1: retrieval, classification and persistence. Extraction and summarisation are not
+    built yet. The run is stored and its id returned as `run_id`.
 
     Error policy for the tree step:
     - An explicit branch_or_ref that GitHub cannot resolve is a caller error -> HTTP 404.
@@ -111,10 +116,22 @@ async def analyze_repo(request: AnalyzeRequest):
     try:
         metadata = await fetch_repo_metadata(normalized)
     except GitHubClientError as e:
-        # Surface GitHub API errors cleanly
+        # Record the attempt before failing the request. A repo that never resolved is
+        # otherwise the one outcome that leaves no trace, and it is exactly what a user
+        # comes back to ask about.
+        failed_run_id = await storage.create_failed_run(
+            session,
+            repo_url=str(request.repo_url),
+            owner=normalized.owner,
+            name=normalized.name,
+            branch_or_ref=request.branch_or_ref,
+            error=e.message,
+        )
+        # the run_id travels with the error so a caller can open the failed run: it is
+        # still a run, and it is the record of what went wrong
         raise HTTPException(
             status_code=_status_for(e),
-            detail={"message": e.message},
+            detail={"message": e.message, "run_id": failed_run_id},
         )
 
     # Step 3: decide which ref to ask GitHub for.
@@ -132,6 +149,7 @@ async def analyze_repo(request: AnalyzeRequest):
     # None, not an empty summary: if the tree never arrived there is nothing to
     # classify, and zero counts would read as "we looked and found nothing".
     classification: dict | None = None
+    classification_result: ClassificationResult | None = None
 
     try:
         tree = await fetch_repo_tree(normalized, attempted_ref)
@@ -169,7 +187,8 @@ async def analyze_repo(request: AnalyzeRequest):
             for entry in entries[:TREE_PREVIEW_LIMIT]
         ]
         # Classify every entry GitHub returned, not just the previewed ones.
-        classification = _classification_payload(classify_tree(entries))
+        classification_result = classify_tree(entries)
+        classification = _classification_payload(classification_result)
 
         if tree_truncated:
             # Truncation must never be discoverable only by noticing a boolean.
@@ -179,8 +198,26 @@ async def analyze_repo(request: AnalyzeRequest):
                 "repository contains more. Classification below covers only those."
             )
 
-    # Step 5: build response
+    # Step 5: persist. A degraded run is stored too, with its error and whatever
+    # metadata succeeded -- a run that vanished because it failed would be the worst
+    # outcome for a tool whose pitch is that it tells you what went wrong.
+    run_id = await storage.create_run(
+        session,
+        repo_url=str(request.repo_url),
+        owner=normalized.owner,
+        name=normalized.name,
+        branch_or_ref=request.branch_or_ref,
+        resolved_ref=resolved_ref,
+        metadata=metadata,
+        tree_entry_count=tree_entry_count,
+        tree_truncated=tree_truncated,
+        tree_error=tree_error,
+        classification=classification_result,
+    )
+
+    # Step 6: build response
     return {
+        "run_id": run_id,
         "repo_url": str(request.repo_url),
         "owner": normalized.owner,
         "name": normalized.name,
@@ -202,3 +239,80 @@ async def analyze_repo(request: AnalyzeRequest):
             "language": metadata.get("language"),
         },
     }
+
+def _run_summary(run) -> dict:
+    """One run as JSON. Counts come from the stored run row."""
+    return {
+        "run_id": run.id,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "repo_url": run.repo_url,
+        "owner": run.owner,
+        "name": run.name,
+        "branch_or_ref": run.branch_or_ref,
+        "resolved_ref": run.resolved_ref,
+        "status": run.status,
+        # the failure that ended the run, if one did; null on completed and degraded runs
+        "error": run.error,
+        "metadata": {
+            "default_branch": run.default_branch,
+            "description": run.description,
+            "language": run.language,
+            "private": run.private,
+            "archived": run.archived,
+            "fork": run.fork,
+            "stargazers_count": run.stargazers_count,
+        },
+        "tree_entry_count": run.tree_entry_count,
+        "tree_truncated": run.tree_truncated,
+        "tree_error": run.tree_error,
+        "classification": {
+            "total_entries": run.tree_entry_count,
+            "directories": run.directories,
+            "selected_count": run.selected_count,
+            "skipped_count": run.skipped_count,
+            "failed_count": run.failed_count,
+        },
+    }
+
+
+@router.get("/runs", response_class=JSONResponse)
+async def list_runs(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_session),
+):
+    """Recent runs, newest first."""
+    runs, total = await storage.list_runs(session, limit=limit, offset=offset)
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": [_run_summary(r) for r in runs],
+    }
+
+
+@router.get("/runs/{run_id}", response_class=JSONResponse)
+async def get_run(run_id: str, session: AsyncSession = Depends(get_session)):
+    """
+    One stored run.
+
+    `stored_identity_holds` is recomputed from the rows rather than read off the run's
+    denormalised counts, so a drifted count cannot report itself as consistent.
+    """
+    run = await storage.get_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
+
+    summary = _run_summary(run)
+    by_status = await storage.reconstruct_counts(session, run_id)
+    stored_total = sum(by_status.values())
+    summary["stored_rows"] = {
+        "by_status": by_status,
+        "total": stored_total,
+        "skipped_count_by_reason": await storage.counts_by_reason(session, run_id),
+        # a degraded run stored no entries, so the identity is vacuous there
+        "stored_identity_holds": (
+            stored_total == run.tree_entry_count if run.status == "completed" else None
+        ),
+    }
+    return summary

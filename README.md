@@ -183,17 +183,16 @@ RepoBridge is mid-build. This section describes only what runs right now; everyt
 **Working:**
 
 - `GET /health` — returns `{"status": "ok", ...}`.
-- `GET /` — renders the UI shell.
 - `POST /api/analyze` — validates a GitHub URL, fetches repository metadata and the git
-  tree for the resolved ref, and reports what it saw.
+  tree for the resolved ref, classifies every entry, and stores the run.
+- `GET /api/runs`, `GET /api/runs/{run_id}`, `GET /api/runs/{run_id}/files` — read stored
+  runs back. The files endpoint is paginated and filterable by status and skip reason.
+- **The web UI**: the form on `/` submits to the API and opens the run it creates; `/runs/{id}`
+  shows metadata, status, counts and grouped skip reasons; `/runs/{id}/tree` browses the
+  classified entries with filters and pagination.
 
-**Not built yet:** file selection, content extraction, summaries, diagnostics, SQLite
-persistence (nothing is stored — every call is a fresh lookup), and the endpoints for
-runs/files/chunks/diagnostics.
-
-**The UI form is inert.** `templates/index.html` renders an input form, but
-`static/js/main.js` intercepts submit and shows an alert. It does not call `/api/analyze`.
-Use the API directly until the UI is wired up.
+**Not built yet:** content extraction, summaries, and diagnostics — with their endpoints
+(`/chunks`, `/diagnostics`) and their database tables.
 
 ### POST /api/analyze
 
@@ -217,6 +216,7 @@ Response on success:
 | `tree_truncated` | `true` when GitHub truncated the tree (very large repos) |
 | `tree_error` | `null` on a clean run; otherwise what went wrong, including the truncation warning |
 | `classification` | file classification summary, or `null` if the tree never arrived — see below |
+| `run_id` | id of the stored run. Present on success; on a metadata failure it is returned inside `detail` so the failed run can still be opened |
 
 Status codes:
 
@@ -266,6 +266,21 @@ specific human-readable `message` such as `'node_modules/' is excluded by defaul
 
 `classification` is `null` — not an empty summary — when the tree call failed, since zero
 counts would read as "we looked and found nothing" rather than "we never looked".
+
+### Reading a stored run: use `status`, not the error fields
+
+`GET /api/runs/{run_id}` returns a `status` of `completed`, `degraded` or `failed`, and
+**that field is the reliable discriminator.** There are two distinct error fields and a
+client keying on either one alone will misread a run:
+
+| `status` | Meaning | `error` | `tree_error` |
+|---|---|---|---|
+| `completed` | metadata and tree both retrieved | `null` | `null`, unless GitHub truncated the tree |
+| `degraded` | metadata retrieved, tree call failed | `null` | set |
+| `failed` | metadata never resolved; nothing was retrieved or classified | set | `null` |
+
+A client that checks only `tree_error` sees `null` on a **failed** run and would conclude it
+succeeded. Check `status` first. The UI does exactly this.
 
 Supported types, the skip rules, the precedence order and the thresholds are defined in
 `specs/001-repobridge-v0.1/selection.md`.

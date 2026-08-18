@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block content %}
+<p class="muted"><a href="/runs/{{ run.id }}">&larr; {{ run.owner }}/{{ run.name }}</a></p>
+
+<section>
+  <h2>Files</h2>
+
+  {#
+    The honesty line. Always rendered, never conditional on the list being long: a reader
+    must never have to infer whether they are looking at everything. With any filter
+    active it names both the match count and the run total, so a small number can never
+    be mistaken for the size of the repository.
+  #}
+  <p class="scope">
+    {% if matching == 0 %}
+      Showing <strong>0</strong> of <strong>{{ run.tree_entry_count }}</strong> entries in this run.
+    {% else %}
+      Showing <strong>{{ shown_from }}&ndash;{{ shown_to }}</strong> of
+      <strong>{{ matching }}</strong>
+      {%- if filtered %} matching entries (of {{ run.tree_entry_count }} in this run)
+      {%- else %} entries{% endif %}.
+    {% endif %}
+    {% if run.tree_truncated %}
+      <span class="warn-inline">GitHub truncated this tree &mdash; the repository contains
+      more than the {{ run.tree_entry_count }} entries stored here.</span>
+    {% endif %}
+  </p>
+
+  <form class="filters" method="get" action="/runs/{{ run.id }}/tree">
+    {% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
+    {% if reason %}<input type="hidden" name="reason" value="{{ reason }}">{% endif %}
+    <label for="path" class="muted">Path contains:</label>
+    <input type="search" id="path" name="path" value="{{ path or '' }}"
+           placeholder="e.g. assets/2764.svg">
+    <button type="submit">Search</button>
+    {% if path %}
+      <a class="chip" href="{{ tree_url(run.id, status=status, reason=reason) }}">clear &times;</a>
+    {% endif %}
+  </form>
+
+  <div class="filters">
+    <span class="muted">Status:</span>
+    <a class="chip {{ 'chip-on' if not status else '' }}"
+       href="{{ tree_url(run.id, reason=reason, path=path) }}">all</a>
+    {% for s in statuses %}
+      <a class="chip {{ 'chip-on' if status == s else '' }}"
+         href="{{ tree_url(run.id, status=s, reason=reason, path=path) }}">{{ s }}</a>
+    {% endfor %}
+  </div>
+
+  {% if reasons %}
+  <div class="filters">
+    <span class="muted">Skip reason:</span>
+    <a class="chip {{ 'chip-on' if not reason else '' }}"
+       href="{{ tree_url(run.id, status=status, path=path) }}">any</a>
+    {% for r, count in reasons.items() %}
+      <a class="chip {{ 'chip-on' if reason == r else '' }}"
+         href="{{ tree_url(run.id, status=status, reason=r, path=path) }}">{{ r }} ({{ count }})</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if rows %}
+  <table class="tree">
+    <thead>
+      <tr><th>Status</th><th>Path</th><th class="num">Size</th><th>Reason</th></tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td><span class="badge badge-{{ row.status }}">{{ row.status }}</span></td>
+        <td class="mono">{{ row.path }}</td>
+        <td class="num muted">{{ row.size if row.size is not none else '' }}</td>
+        <td>
+          {% if row.reason %}
+            <span class="badge badge-skipped">{{ row.reason }}</span>
+            <div class="muted small">{{ row.message }}</div>
+          {% elif row.message %}
+            <div class="muted small">{{ row.message }}</div>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="pager">
+    {% if offset > 0 %}
+      <a class="button-link"
+         href="{{ tree_url(run.id, status=status, reason=reason, path=path, offset=[offset - page_size, 0]|max) }}">&larr; Previous</a>
+    {% else %}
+      <span class="button-link disabled">&larr; Previous</span>
+    {% endif %}
+    <span class="muted">page {{ (offset // page_size) + 1 }} of {{ ((matching - 1) // page_size) + 1 }}</span>
+    {% if shown_to < matching %}
+      <a class="button-link"
+         href="{{ tree_url(run.id, status=status, reason=reason, path=path, offset=offset + page_size) }}">Next &rarr;</a>
+    {% else %}
+      <span class="button-link disabled">Next &rarr;</span>
+    {% endif %}
+  </div>
+  {% else %}
+    <p class="muted">
+      {% if run.status != 'completed' %}
+        This run stored no entries &mdash; see the run page for what went wrong.
+      {% elif filtered %}
+        No entries match these filters. The run has {{ run.tree_entry_count }} entries in total.
+      {% else %}
+        This run stored no entries.
+      {% endif %}
+    </p>
+  {% endif %}
+</section>
+{% endblock %}

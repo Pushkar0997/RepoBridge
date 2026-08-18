@@ -3,20 +3,55 @@
 {% block content %}
 <section>
   <h2>Analyze a GitHub repository</h2>
-  <p>Paste a public GitHub repo URL below to start an analysis (this is just the UI shell for v0.1).</p>
+  <p class="muted">
+    Paste a public GitHub repo URL. RepoBridge fetches the tree, classifies every entry,
+    and stores the run so you can come back to it.
+  </p>
 
   <form id="analyze-form">
     <label for="repo_url">Repository URL</label><br>
-    <input type="url" id="repo_url" name="repo_url" placeholder="https://github.com/owner/repo" required style="width: 100%; max-width: 480px;"><br><br>
+    <input type="url" id="repo_url" name="repo_url"
+           placeholder="https://github.com/owner/repo" required class="wide"><br><br>
 
     <label for="branch_or_ref">Branch or ref (optional)</label><br>
-    <input type="text" id="branch_or_ref" name="branch_or_ref" placeholder="main"><br><br>
+    <input type="text" id="branch_or_ref" name="branch_or_ref" placeholder="defaults to the repo's default branch"><br><br>
 
-    <button type="submit">Analyze (not wired yet)</button>
+    <button type="submit" id="analyze-button">Analyze</button>
+    <span id="analyze-status" class="muted" role="status" aria-live="polite"></span>
   </form>
 
-  <p style="margin-top: 1rem; color: #666;">
-    The form is not connected to the backend yet – Milestone 0 only guarantees that the UI and health endpoint load correctly.
-  </p>
+  <div id="analyze-error" class="notice notice-error" hidden>
+    <strong>Analysis failed.</strong>
+    <p id="analyze-error-message"></p>
+    <p id="analyze-error-link" hidden>
+      The attempt was still recorded &mdash; <a href="#">open the failed run</a>.
+    </p>
+  </div>
+</section>
+
+<section>
+  <h2>Recent runs</h2>
+  {% if runs %}
+    <p class="muted">Showing {{ runs|length }} of {{ total_runs }} stored run{{ '' if total_runs == 1 else 's' }}.</p>
+    <table>
+      <thead>
+        <tr><th>Repository</th><th>Status</th><th>Entries</th><th>Selected</th><th>Skipped</th><th>When</th></tr>
+      </thead>
+      <tbody>
+        {% for run in runs %}
+        <tr>
+          <td><a href="/runs/{{ run.id }}">{{ run.owner }}/{{ run.name }}</a></td>
+          <td><span class="badge badge-{{ run.status }}">{{ run.status }}</span></td>
+          <td class="num">{{ run.tree_entry_count }}</td>
+          <td class="num">{{ run.selected_count }}</td>
+          <td class="num">{{ run.skipped_count }}</td>
+          <td class="muted">{{ run.created_at.strftime('%Y-%m-%d %H:%M UTC') if run.created_at else '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No runs yet. Analyze a repository above.</p>
+  {% endif %}
 </section>
 {% endblock %}

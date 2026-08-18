@@ -74,10 +74,16 @@ class ClassificationResult:
     """
 
     total_entries: int = 0
-    directories: int = 0
+    # Directory paths, not just a count: persistence stores every entry, and the
+    # accounting identity must be reconstructible from stored rows alone.
+    directory_paths: list[str] = field(default_factory=list)
     selected: list[ClassifiedFile] = field(default_factory=list)
     skipped: list[ClassifiedFile] = field(default_factory=list)
     failed: list[ClassifiedFile] = field(default_factory=list)
+
+    @property
+    def directories(self) -> int:
+        return len(self.directory_paths)
 
     @property
     def classified_files(self) -> int:
@@ -257,7 +263,7 @@ def classify_tree(
         classified = classify_entry(entry, cfg)
 
         if classified is None:
-            result.directories += 1
+            result.directory_paths.append(entry.get("path", ""))
         elif classified.status is FileStatus.SELECTED:
             result.selected.append(classified)
         elif classified.status is FileStatus.SKIPPED:

@@ -1,15 +1,20 @@
-﻿Selection rules moved to their own spec; smoke suite classification pass
+﻿Milestone 4: persistence and tree view
 
-- Move selection rules from spec.md 7.3 (104 lines) into selection.md, both
-  amendments preserved and dated; spec.md keeps the requirement and points
-  at the detail
-- Update eight cross-references across README, evals.md and smoke.md, plus
-  four stale section citations in config.py and selection.py
-- Add a summary index to smoke.md; record Run 4 classifying the three repos
-  that had retrieval figures but no classification figures
-- Accounting identity holds at 37,393 entries on kubernetes/kubernetes,
-  verified independently of the flag the API reports
-- too_large and excluded_directory observed live for the first time; five of
-  six skip reasons now seen on real repositories
+- Add infra/schemas.py, db.py, storage.py: SQLAlchemy + aiosqlite, database
+  path in config
+- Store every classified entry including directories; accounting identity
+  reconstructible from stored rows alone, computed from rows rather than
+  from denormalised count columns so a drifted count cannot self-certify
+- 37,393 kubernetes rows persist in 0.52s batched; full pipeline 6.7s
+- Degraded and failed runs both persist; error names the stage that failed,
+  tree_error reserved for metadata-succeeded-tree-did-not, never both
+- No token is stored: tests assert no column holds it and no stored value
+  contains it
+- Endpoints: run_id on analyze, GET /api/runs, /api/runs/{id},
+  /api/runs/{id}/files with pagination and status/reason filters
+- UI: form wired up, run detail and tree pages reading from the database;
+  scope line always states what fraction is shown
+- Test isolation: storage tests opt in, unguarded tests hit a refusing stub
+  rather than a real database; suite 4.8s -> 3.5s
 
-Suite: 168 tests, unchanged.
+Suite: 168 tests -> 215.

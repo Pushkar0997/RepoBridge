@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block content %}
+<p class="muted"><a href="/">&larr; All runs</a></p>
+
+<section>
+  <h2>
+    {{ run.owner }}/{{ run.name }}
+    <span class="badge badge-{{ run.status }}">{{ run.status }}</span>
+  </h2>
+  <p class="muted">
+    <a href="{{ run.repo_url }}" rel="noopener noreferrer">{{ run.repo_url }}</a>
+    &middot; run {{ run.id }}
+    {% if run.created_at %}&middot; {{ run.created_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}
+  </p>
+
+  {#
+    `status` is the discriminator, not the presence of an error field: a failed run has
+    `error` set and `tree_error` null, so a template keying on tree_error alone would
+    render a failure as a success.
+  #}
+  {% if run.status == 'failed' %}
+    <div class="notice notice-error">
+      <strong>This run failed.</strong> The repository never resolved, so nothing was
+      retrieved or classified.
+      <p class="mono">{{ run.error }}</p>
+    </div>
+  {% elif run.status == 'degraded' %}
+    <div class="notice notice-warn">
+      <strong>Partial run.</strong> Repository metadata was retrieved, but the file tree
+      was not &mdash; so there is no file listing for this run.
+      <p class="mono">{{ run.tree_error }}</p>
+    </div>
+  {% elif run.tree_truncated %}
+    <div class="notice notice-warn">
+      <strong>Incomplete listing.</strong> GitHub truncated the tree for this repository.
+      The {{ run.tree_entry_count }} entries below are all that were returned; the
+      repository contains more.
+      <p class="mono">{{ run.tree_error }}</p>
+    </div>
+  {% endif %}
+</section>
+
+<section>
+  <h3>Repository</h3>
+  <table>
+    <tbody>
+      <tr><th>Requested ref</th><td>{{ run.branch_or_ref or '(default branch)' }}</td></tr>
+      <tr>
+        <th>Resolved ref</th>
+        <td>
+          {% if run.resolved_ref %}{{ run.resolved_ref }}
+          {% else %}<span class="muted">not resolved &mdash; the tree call did not succeed</span>{% endif %}
+        </td>
+      </tr>
+      <tr><th>Default branch</th><td>{{ run.default_branch or '—' }}</td></tr>
+      <tr><th>Language</th><td>{{ run.language or '—' }}</td></tr>
+      <tr><th>Description</th><td>{{ run.description or '—' }}</td></tr>
+      <tr><th>Stars</th><td>{{ run.stargazers_count if run.stargazers_count is not none else '—' }}</td></tr>
+    </tbody>
+  </table>
+</section>
+
+{% if run.status == 'completed' %}
+<section>
+  <h3>Classification</h3>
+  <p class="muted">
+    Every entry GitHub returned is accounted for:
+    <span class="mono">{{ run.directories }} directories + {{ run.selected_count }} selected
+    + {{ run.skipped_count }} skipped + {{ run.failed_count }} failed
+    = {{ run.tree_entry_count }} entries</span>.
+  </p>
+
+  <div class="counts">
+    <a class="count-card" href="/runs/{{ run.id }}/tree?status=selected">
+      <span class="count">{{ run.selected_count }}</span><span class="badge badge-selected">selected</span>
+    </a>
+    <a class="count-card" href="/runs/{{ run.id }}/tree?status=skipped">
+      <span class="count">{{ run.skipped_count }}</span><span class="badge badge-skipped">skipped</span>
+    </a>
+    <a class="count-card" href="/runs/{{ run.id }}/tree?status=directory">
+      <span class="count">{{ run.directories }}</span><span class="badge badge-directory">directories</span>
+    </a>
+    <a class="count-card" href="/runs/{{ run.id }}/tree?status=failed">
+      <span class="count">{{ run.failed_count }}</span><span class="badge badge-failed">failed</span>
+    </a>
+  </div>
+
+  <h3>Why files were skipped</h3>
+  {% if reasons %}
+    <table>
+      <thead><tr><th>Reason</th><th>Count</th><th></th></tr></thead>
+      <tbody>
+        {% for reason, count in reasons.items() %}
+        <tr>
+          <td><span class="badge badge-skipped">{{ reason }}</span></td>
+          <td class="num">{{ count }}</td>
+          <td><a href="/runs/{{ run.id }}/tree?reason={{ reason }}">view</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">Nothing was skipped in this run.</p>
+  {% endif %}
+
+  <p><a class="button-link" href="/runs/{{ run.id }}/tree">Browse all {{ run.tree_entry_count }} entries &rarr;</a></p>
+</section>
+{% endif %}
+{% endblock %}

@@ -43,3 +43,191 @@ button {
 button:hover {
   background: #1752b5;
 }
+/* --- layout -------------------------------------------------------------- */
+
+main {
+  max-width: 1000px;
+}
+
+section {
+  margin-bottom: 2rem;
+}
+
+a {
+  color: #1f6feb;
+}
+
+.muted {
+  color: #666;
+}
+
+.small {
+  font-size: 0.85rem;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  word-break: break-all;
+}
+
+input.wide {
+  width: 100%;
+  max-width: 480px;
+}
+
+/* --- tables -------------------------------------------------------------- */
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  background: #fff;
+  margin: 0.75rem 0;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid #eee;
+  vertical-align: top;
+}
+
+thead th {
+  background: #fafafa;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #555;
+}
+
+td.num, th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+table.tree td {
+  font-size: 0.9rem;
+}
+
+/* --- badges -------------------------------------------------------------- */
+
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.badge-selected   { background: #e6f4ea; color: #14632c; border-color: #b7e0c3; }
+.badge-skipped    { background: #fdf3e2; color: #7a4b06; border-color: #f0d9ac; }
+.badge-directory  { background: #eef1f5; color: #44506b; border-color: #d3dae5; }
+.badge-failed     { background: #fdeaea; color: #8a1c1c; border-color: #f2c2c2; }
+.badge-completed  { background: #e6f4ea; color: #14632c; border-color: #b7e0c3; }
+.badge-degraded   { background: #fdf3e2; color: #7a4b06; border-color: #f0d9ac; }
+
+/* --- notices ------------------------------------------------------------- */
+
+.notice {
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  border-left: 4px solid;
+  margin: 1rem 0;
+  background: #fff;
+}
+
+.notice-error { border-color: #d13438; background: #fdeaea; }
+.notice-warn  { border-color: #c88a04; background: #fdf6e3; }
+.notice p     { margin: 0.4rem 0 0; }
+
+.warn-inline {
+  display: inline-block;
+  color: #7a4b06;
+  background: #fdf3e2;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+}
+
+/* --- scope line: how much of the whole is on screen ---------------------- */
+
+.scope {
+  background: #fff;
+  border: 1px solid #e2e2e2;
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  margin: 0.5rem 0 1rem;
+}
+
+/* --- counts and filters -------------------------------------------------- */
+
+.counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.count-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  align-items: flex-start;
+  background: #fff;
+  border: 1px solid #e2e2e2;
+  border-radius: 6px;
+  padding: 0.6rem 0.9rem;
+  min-width: 6.5rem;
+  text-decoration: none;
+  color: inherit;
+}
+
+.count-card:hover { border-color: #1f6feb; }
+.count-card .count { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+}
+
+.chip {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid #d5d5d5;
+  background: #fff;
+  font-size: 0.82rem;
+  text-decoration: none;
+  color: #333;
+}
+
+.chip:hover  { border-color: #1f6feb; }
+.chip-on     { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+
+/* --- pager --------------------------------------------------------------- */
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.button-link {
+  display: inline-block;
+  padding: 0.35rem 0.8rem;
+  border-radius: 4px;
+  border: 1px solid #d5d5d5;
+  background: #fff;
+  text-decoration: none;
+  color: #1f6feb;
+}
+
+.button-link:hover  { border-color: #1f6feb; }
+.button-link.disabled { color: #aaa; background: #f3f3f3; }
+
+button:disabled { background: #9bb8e6; cursor: progress; }
