@@ -43,17 +43,18 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      /* Show what actually went wrong, not a generic message. */
-      const detail = body && body.detail ? body.detail : null;
+      /* Show what actually went wrong, not a generic message.
+         One envelope for every API failure -- see api/errors.py. */
+      const err = body && body.error ? body.error : null;
       errorMsg.textContent =
-        (detail && detail.message) ||
-        (body && body.message) ||
+        (err && err.message) ||
         ("The server returned HTTP " + response.status + ".");
 
       /* A failed run is still a run: link to it when one was recorded. */
-      if (detail && detail.run_id) {
+      const failedRunId = err && err.details && err.details.run_id;
+      if (failedRunId) {
         const link = errorLink.querySelector("a");
-        link.href = "/runs/" + detail.run_id;
+        link.href = "/runs/" + failedRunId;
         errorLink.hidden = false;
       }
       errorBox.hidden = false;
@@ -111,7 +112,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       errorMsg.textContent =
-        (body && (body.error || (body.detail && body.detail.message))) ||
+        (body && body.error && body.error.message) ||
         ("The server returned HTTP " + response.status + ".");
       errorBox.hidden = false;
     } catch (networkError) {

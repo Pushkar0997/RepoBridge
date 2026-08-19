@@ -156,156 +156,306 @@ For now, the classic venv + `requirements.txt` flow is enough. The `pyproject.to
 
 ---
 
-## v0.1 scope (short version)
-
-- Public GitHub repositories only.
-- Local FastAPI server + SQLite.
-- Small server-rendered UI.
-- No accounts, billing, cloud, or browser automation.
-- No private repos in v0.1.
-- Focus on:
-  - repo tree,
-  - file selection,
-  - extraction,
-  - summary,
-  - diagnostics.
-
-Anything beyond this is explicitly out of scope until v0.x+ specs say otherwise.
-
----
-
 ## What actually works today
 
-RepoBridge is mid-build. This section describes only what runs right now; everything in
-"Core idea" above is the target, not the current state. Milestones are tracked in
-`specs/001-repobridge-v0.1/plan.md`.
+The full v0.1 pipeline runs end to end: URL in, stored run with classified files,
+extracted chunks, a grounded summary and a diagnostics timeline out. Milestones 0–7 are
+closed with recorded verdicts in `specs/001-repobridge-v0.1/evals.md`; live results per
+repository are in `smoke.md`.
 
 **Working:**
 
-- `GET /health` — returns `{"status": "ok", ...}`.
-- `POST /api/analyze` — validates a GitHub URL, fetches repository metadata and the git
-  tree for the resolved ref, classifies every entry, and stores the run.
-- `GET /api/runs`, `GET /api/runs/{run_id}`, `GET /api/runs/{run_id}/files` — read stored
-  runs back. The files endpoint is paginated and filterable by status and skip reason.
-- **The web UI**: the form on `/` submits to the API and opens the run it creates; `/runs/{id}`
-  shows metadata, status, counts and grouped skip reasons; `/runs/{id}/tree` browses the
-  classified entries with filters and pagination.
+- **Analysis** — validate a GitHub URL, fetch metadata and the git tree, classify every
+  entry, read and extract the selected files, summarise from what was read, and record a
+  diagnostics timeline. All of it stored in SQLite.
+- **REST API** — nine endpoints, documented below, with one error shape.
+- **Web UI** — the form on `/` submits and opens the run it creates; `/runs/{id}` shows
+  metadata, counts, chunk previews and the summary; `/runs/{id}/tree` browses classified
+  entries with filters and pagination; `/runs/{id}/diagnostics` shows the run's timeline.
 
-**Not built yet:** content extraction, summaries, and diagnostics — with their endpoints
-(`/chunks`, `/diagnostics`) and their database tables.
+**Not built:** the items listed under "Out of scope" below. Nothing in the pipeline is
+stubbed.
+
+---
+
+## API
+
+Base URL when running locally: `http://127.0.0.1:8000`.
+
+Interactive docs are served by FastAPI at `/docs` (Swagger UI) and `/redoc`.
+
+### The error envelope
+
+**Every** non-2xx response from this application has one shape:
+
+```json
+{
+  "error": {
+    "status": 404,
+    "code": "run_not_found",
+    "message": "Run 'abc123' was not found.",
+    "details": {"run_id": "abc123"}
+  }
+}
+```
+
+Match on `code`, not on `message`: codes are the contract, messages are written for people
+and may be reworded. `details` is always an object and may be empty.
+
+| Code | Status | Meaning |
+|---|---|---|
+| `invalid_request` | 422 | the request could not be parsed into the expected schema. `details.fields` lists each violation |
+| `invalid_repo_url` | 400 | parsed, but not a usable public github.com repository URL |
+| `invalid_value` | 400 | a query parameter value is not one of a known set. `details.valid` lists the accepted values |
+| `run_not_found` | 404 | no stored run with that id |
+| `repo_not_found` | 404 | GitHub has no such repository. `details.run_id` opens the stored failed run |
+| `ref_not_found` | 404 | the repository exists; the branch, tag or commit you named does not. `details.run_id` opens the stored failed run |
+| `rate_limited` | 429 | GitHub rate-limited the request. The message says when it resets |
+| `github_error` | 502 | GitHub was unreachable or returned a 5xx |
+| `internal_error` | 500 | RepoBridge itself failed. The detail is in the server log, deliberately not in the response |
+
+Status codes name the faulting party: 4xx means your request, 429/502 means GitHub, 500
+means RepoBridge. No endpoint returns a 4xx for an upstream or internal problem.
+
+### Pagination
+
+Every list endpoint takes `limit` and `offset` and returns the same four fields:
+
+| Field | Meaning |
+|---|---|
+| `total` | items matching your filters |
+| `unfiltered_total` | items ignoring every filter — **so a filtered count can never be read as a whole one** |
+| `limit`, `offset` | echoed back |
+| `items` | the page |
+| `filters` | echoed back, with `null` for anything you did not set |
+
+Maximum `limit` differs by endpoint because payload sizes do: runs 100, files 500,
+chunks 200, diagnostics 1000. Exceeding it is a `422 invalid_request`.
+
+### GET /health
+
+Liveness. Returns `{"status": "ok", "service": "repobridge", "version": "0.1.0"}`.
 
 ### POST /api/analyze
 
+Run the full pipeline against a repository.
+
 ```bash
-curl -X POST http://127.0.0.1:8000/api/analyze -H "Content-Type: application/json" -d "{\"repo_url\": \"https://github.com/owner/repo\", \"branch_or_ref\": \"main\"}"
+curl -X POST http://127.0.0.1:8000/api/analyze -H "Content-Type: application/json" -d "{\"repo_url\": \"https://github.com/psf/requests\"}"
 ```
 
-Request fields: `repo_url` (required), `branch_or_ref` (optional; defaults to the
-repository's default branch). There is **no** `github_token` request field — see below.
-
-Response on success:
+Request: `repo_url` (required), `branch_or_ref` (optional, defaults to the repository's
+default branch). There is **no** `github_token` request field — see "Environment" below.
 
 | Field | Meaning |
 |---|---|
-| `repo_url`, `owner`, `name` | the validated and normalized input |
+| `run_id` | id of the stored run |
+| `repo_url`, `owner`, `name` | the validated, normalised input |
 | `branch_or_ref` | what you asked for, or `null` |
-| `resolved_ref` | the ref GitHub actually answered for. **`null` when the tree call failed** — the field never claims a ref was resolved when it wasn't. On success it is your `branch_or_ref`, else the default branch |
+| `resolved_ref` | the ref GitHub actually answered for. **`null` when the tree call failed** — never claims a ref was resolved when it was not |
 | `metadata` | `full_name`, `private`, `default_branch`, `description`, `archived`, `fork`, `stargazers_count`, `language` |
-| `tree_preview` | first 50 entries, each `{path, type, size, mode}`. `size` is `null` for directories |
-| `tree_entry_count` | entries GitHub returned. Not a total — if `tree_truncated` is true, the repo has more |
-| `tree_truncated` | `true` when GitHub truncated the tree (very large repos) |
+| `tree_preview` | first 50 entries, each `{path, type, size, mode}` |
+| `tree_entry_count` | entries GitHub returned. Not a total — if `tree_truncated`, the repo has more |
+| `tree_truncated` | `true` when GitHub truncated the tree |
 | `tree_error` | `null` on a clean run; otherwise what went wrong, including the truncation warning |
-| `classification` | file classification summary, or `null` if the tree never arrived — see below |
-| `run_id` | id of the stored run. Present on success; on a metadata failure it is returned inside `detail` so the failed run can still be opened |
+| `classification` | counts and samples per status, or `null` if the tree never arrived — see below |
+| `extraction` | what was read — see below |
+| `summary` | the generated summary and its provenance — see below |
 
-Status codes:
+Status codes: `200` when metadata was retrieved (the tree may still have failed — check
+`tree_error`), `400` invalid URL, `404` repository or ref not found, `429` rate limited,
+`502` GitHub unreachable or 5xx.
 
-| Code | When |
-|---|---|
-| 200 | metadata retrieved. The tree may still have failed — check `tree_error` |
-| 400 | the URL is not a valid github.com repository URL |
-| 404 | the repository does not exist, or you named a `branch_or_ref` that does not |
-| 429 | GitHub rate-limited us (primary or secondary); the message includes when it resets |
-| 502 | GitHub was unreachable, or returned a 5xx |
-
-A tree failure that is *not* a bad ref (rate limit, network, upstream 5xx) returns **200**
-with metadata intact, `tree_error` populated, and `resolved_ref` null, rather than failing the
-whole request. There is no separate "attempted ref" field: with an explicit request you already
-have `branch_or_ref`, and without one you have `metadata.default_branch`, so what *would* have
-been used stays derivable without a third field asserting anything unverified.
+A tree failure that is *not* a bad ref returns **200** with metadata intact,
+`tree_error` populated and `resolved_ref` null, rather than failing the whole request. A
+bad ref you explicitly named is a 404 — with a stored run, reachable via
+`error.details.run_id`.
 
 GitHub's raw response body is never echoed back.
 
-### The `classification` object
+### GET /api/runs
 
-Every file entry GitHub returned is classified into exactly one status, and nothing is
-dropped. Directories are counted separately rather than classified — "will we read this
-file's content?" is not a meaningful question about a directory, and counting them as
-skipped would make the skip totals misleading.
+Stored runs, newest first. Paginated and filterable.
 
-| Field | Meaning |
+| Filter | Meaning |
 |---|---|
-| `total_entries` | every entry in the tree, matching `tree_entry_count` |
-| `directories` | entries of type `tree`, counted not classified |
-| `selected_count` / `skipped_count` / `failed_count` | totals across the **whole** tree |
-| `skipped_count_by_reason` | skip counts grouped by reason code, e.g. `{"non_text_asset": 6, "lockfile": 2}` |
-| `accounts_for_every_entry` | `true` when `directories + selected + skipped + failed == total_entries` |
-| `sample_limit` | the cap applied to the three `*_sample` arrays (50) |
-| `selected_sample` | up to 50 files, each `{path, extension, size}` |
-| `skipped_sample` | up to 50 files, each `{path, reason, message}` |
-| `failed_sample` | up to 50 entries that could not be classified at all |
+| `status` | `completed`, `degraded` or `failed` |
+| `owner` | repository owner, case-insensitive exact match |
+| `since`, `until` | ISO 8601 date or timestamp, inclusive. A bare date means midnight UTC |
 
-**`*_count` fields cover everything; `*_sample` arrays are capped.** The counts are the
-source of truth — `kubernetes/kubernetes` returns 37,393 entries and the response does not
-carry them inline.
+```bash
+curl "http://127.0.0.1:8000/api/runs?status=degraded&owner=psf&since=2026-08-18&limit=5"
+```
 
-Skip reasons are a closed set, so consumers can group by them:
-`excluded_directory`, `submodule`, `lockfile`, `non_text_asset`,
-`unsupported_extension`, `too_large`. Every skipped file carries both the code and a
-specific human-readable `message` such as `'node_modules/' is excluded by default`.
+`total` counts matches; `unfiltered_total` counts every stored run.
 
-`classification` is `null` — not an empty summary — when the tree call failed, since zero
-counts would read as "we looked and found nothing" rather than "we never looked".
+### GET /api/runs/{run_id}
 
-### Reading a stored run: use `status`, not the error fields
+One stored run: everything in a `/api/runs` item, plus `stored_rows` — the counts
+recomputed from the stored entry rows rather than read off the run's own columns, so a
+drifted count cannot report itself as consistent. `stored_rows.stored_identity_holds` is
+`true` when they agree, and `null` for a degraded run that stored no entries.
 
-`GET /api/runs/{run_id}` returns a `status` of `completed`, `degraded` or `failed`, and
-**that field is the reliable discriminator.** There are two distinct error fields and a
-client keying on either one alone will misread a run:
+**Use `status`, not the error fields, to tell what happened:**
 
 | `status` | Meaning | `error` | `tree_error` |
 |---|---|---|---|
 | `completed` | metadata and tree both retrieved | `null` | `null`, unless GitHub truncated the tree |
 | `degraded` | metadata retrieved, tree call failed | `null` | set |
-| `failed` | metadata never resolved; nothing was retrieved or classified | set | `null` |
+| `failed` | metadata never resolved, or a named ref did not exist | set | `null` |
 
-A client that checks only `tree_error` sees `null` on a **failed** run and would conclude it
-succeeded. Check `status` first. The UI does exactly this.
+A client checking only `tree_error` sees `null` on a **failed** run and would conclude it
+succeeded.
 
-Supported types, the skip rules, the precedence order and the thresholds are defined in
+### GET /api/runs/{run_id}/files
+
+Every classified entry, paginated. Filters: `status`
+(`directory`/`selected`/`skipped`/`failed`), `reason` (a skip reason code), `path`
+(substring). Each item carries `path`, `entry_type`, `status`, `extension`, `size`,
+`reason`, `message`, and the content outcome `content_status`, `content_error`,
+`content_bytes`.
+
+`run_entry_count` is what the *tree* said the run contained. It sits alongside
+`unfiltered_total` (rows actually stored) rather than replacing it, because the two can
+differ and that difference is what `stored_identity_holds` reports.
+
+Skip reasons are a closed set: `excluded_directory`, `submodule`, `lockfile`,
+`non_text_asset`, `unsupported_extension`, `too_large`. Every skipped file carries both
+the code and a human-readable message. Rules and thresholds are in
 `specs/001-repobridge-v0.1/selection.md`.
 
-### GitHub token
+### GET /api/runs/{run_id}/chunks
 
-Optional, and read **only** from the `REPOBRIDGE_GITHUB_TOKEN` environment variable. It
-raises the rate limit from 60 to 5000 requests/hour. Each `/api/analyze` call makes two
-GitHub requests.
+Normalised text chunks, paginated. Filters: `chunk_type`, `path` (substring).
+`include_text=true` returns full chunk text; the default returns a 300-character
+`text_preview` plus `text_truncated`, because a chunk body is a whole file for everything
+except notebooks.
+
+Each item: `source_path`, `chunk_index`, `cell_index` (notebooks only), `chunk_type`,
+`char_count`, `token_estimate`. Chunk types: `markdown`, `text`, `code`, `data`,
+`notebook_markdown`, `notebook_code`, `notebook_raw`.
+
+### GET /api/runs/{run_id}/summary
+
+The stored summary and the provenance recorded with it, returned together deliberately:
+the prose is only trustworthy to the extent you can check it against what was read.
+
+`status` is the *summary's* status (`ok`, `no_content`, `not_configured`,
+`provider_error`); `run_status` is the run's. `provenance` carries `files_selected`,
+`files_read`, `files_not_fetched`, `read_cap`, `tree_truncated`, `chunks_total`,
+`chunks_included`, `chunks_excluded`, `token_budget`, `is_partial` and a `limitations`
+list.
+
+### POST /api/runs/{run_id}/summarize
+
+Re-generate the summary for a stored run from its stored chunks. No GitHub call, no file
+re-read. Exists because summarisation is the one stage that fails independently of the
+work that fed it — a 503 or an exhausted daily quota would otherwise leave a run
+permanently without a summary.
+
+Returns the same body as `GET /api/runs/{run_id}/summary`. Returns **200 even when the
+provider failed**: the request did what it said — it attempted a re-summarisation and
+recorded the outcome — and the outcome is in `status`. Check `status`, not the HTTP code.
+
+### GET /api/runs/{run_id}/diagnostics
+
+The ordered account of what a run did. Paginated. Filters: `stage`, `level`.
+
+| Field | Meaning |
+|---|---|
+| `outcome` | `worst_level`, `clean`, `is_partial`, `has_failures` |
+| `counts_by_level` | events per level, **over the whole run, never the filtered page** |
+| `stages` | one row per stage that produced events, in pipeline order, with its worst level |
+| `items` | the events: `sequence`, `created_at`, `stage`, `level`, `message`, `path`, `details` |
+
+Stages: `validation`, `metadata`, `tree`, `classification`, `content`, `extraction`,
+`summarization`, `persistence`. A stage that never ran is **absent** rather than shown as
+healthy.
+
+Levels: `info`; `partial` (the stage completed with a quantified shortfall — always
+carries numbers); `degraded` (the stage did not complete, the run continued); `error` (the
+stage did not complete, the run ended).
+
+Filters narrow `items` but never `outcome`, `counts_by_level` or `stages`, so a run cannot
+be made to look clean by viewing it through a narrow enough lens.
+
+### Web UI pages
+
+`GET /` (form and recent runs), `GET /runs/{run_id}` (detail), `GET /runs/{run_id}/tree`
+(classified entries), `GET /runs/{run_id}/diagnostics` (timeline). Server-rendered HTML;
+these are not part of the JSON API.
+
+There is deliberately no `GET /api/runs/{run_id}/tree`: the tree is stored as classified
+entries, and `/files` is that data with filtering and pagination. A second endpoint
+returning the same rows in a different shape would be two contracts for one fact.
+
+---
+
+## Environment
+
+All optional. Nothing is required to start the server.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `REPOBRIDGE_GITHUB_TOKEN` | unset | Raises the GitHub rate limit from 60 to 5000 requests/hour. Strongly recommended: one analysis costs 2 requests plus one per file read |
+| `REPOBRIDGE_GEMINI_API_KEY` | unset | Enables summarisation. Without it, runs complete normally and the summary status is `not_configured` |
+| `REPOBRIDGE_GEMINI_MODEL` | `gemini-3.5-flash-lite` | Which model summarises. The free-tier daily quota is **per model**, so switching this is the documented way to keep working after exhausting one |
+| `REPOBRIDGE_SUMMARY_TOKEN_BUDGET` | `120000` | Prompt token budget. Chunks beyond it are excluded and the shortfall is disclosed in the summary |
+| `REPOBRIDGE_MAX_FILES_PER_RUN` | `200` | The read cap. See "Limitations" |
+| `REPOBRIDGE_DATABASE_URL` | `sqlite+aiosqlite:///./repobridge.db` | Where runs are stored |
 
 ```bash
 export REPOBRIDGE_GITHUB_TOKEN=your_token_here
+export REPOBRIDGE_GEMINI_API_KEY=your_key_here
 ```
 
 There is deliberately no per-request token field: v0.1 is local-first and single-user, so a
-per-request secret would buy nothing while flowing into persistence, diagnostics, and logs.
+per-request secret would buy nothing while flowing into persistence, diagnostics and logs.
 See `specs/001-repobridge-v0.1/spec.md` section 5.
 
-### Tests
+---
+
+## Limitations
+
+Stated plainly, because a tool whose pitch is honesty about what it did should be honest
+about what it is.
+
+- **Public repositories only.** No authentication flow, no private repos.
+- **The read cap.** A run reads at most `REPOBRIDGE_MAX_FILES_PER_RUN` files (default 200).
+  Above that, files are ranked — README and orienting docs first, shallower paths, prose
+  before code, then spread across top-level areas — and the rest are recorded as
+  `not_fetched`. The run always reports how many of how many it read, and the summary
+  discloses it. `github/docs` selects 11,217 files; a default run reads 200 of them.
+- **The summary provider's free tier is small.** Roughly 500 requests/day on
+  `gemini-3.5-flash-lite`, counted **per model per project**. A daily-quota 429 is detected
+  and deliberately not retried — the provider advertises a ~58 s retry delay that is wrong,
+  since the allowance does not return until the quota day rolls over. Repository content
+  sent for summarisation may be used by Google to improve their models on the free tier.
+- **No database migrations.** The schema version is checked at startup; a database written
+  by a different version is reported with a readable message and must be deleted. Stored
+  runs are re-creatable by re-analysing.
+- **GitHub truncates very large trees.** When it does, the run says so and never presents
+  the listing as complete.
+- **Local and single-user.** No accounts, no authentication, no concurrent-writer story.
+
+---
+
+## Out of scope for v0.1
+
+Arbitrary website crawling, browser automation, auth and accounts, billing, cloud or
+multi-user deployment, private repositories, multi-agent orchestration, vector databases,
+and an MCP server. See `AGENTS.md`.
+
+---
+
+## Tests
 
 ```bash
 python -m pytest -v
 ```
 
-All GitHub responses in the suite are mocked; the tests never touch the network.
+The suite never touches the network: every GitHub and provider response is mocked. Live
+verification is recorded separately in `specs/001-repobridge-v0.1/smoke.md`.
 
 ---
 

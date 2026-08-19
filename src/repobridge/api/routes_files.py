@@ -9,10 +9,11 @@ because that is what a person asks ("was assets/2764.svg skipped, and why").
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repobridge.api.errors import invalid_value, run_not_found
 from repobridge.core.selection import SkipReason
 from repobridge.infra import storage
 from repobridge.infra.db import get_session
@@ -36,20 +37,14 @@ async def list_run_files(
 ):
     run = await storage.get_run(session, run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
+        raise run_not_found(run_id)
 
-    valid_statuses = {s.value for s in StoredEntryStatus}
+    valid_statuses = sorted(s.value for s in StoredEntryStatus)
     if status is not None and status not in valid_statuses:
-        raise HTTPException(
-            status_code=400,
-            detail={"message": f"Unknown status '{status}'. Valid: {sorted(valid_statuses)}."},
-        )
-    valid_reasons = {r.value for r in SkipReason}
+        raise invalid_value("status", status, valid_statuses)
+    valid_reasons = sorted(r.value for r in SkipReason)
     if reason is not None and reason not in valid_reasons:
-        raise HTTPException(
-            status_code=400,
-            detail={"message": f"Unknown skip reason '{reason}'. Valid: {sorted(valid_reasons)}."},
-        )
+        raise invalid_value("reason", reason, valid_reasons)
 
     rows, total = await storage.list_run_files(
         session,
@@ -63,10 +58,16 @@ async def list_run_files(
     return {
         "run_id": run_id,
         "total": total,
+        # rows stored for this run, ignoring every filter. The standard denominator, on
+        # every paginated endpoint, so a filtered count is never read as a whole one.
+        "unfiltered_total": await storage.count_run_files(session, run_id),
         "limit": limit,
         "offset": offset,
         "filters": {"status": status, "reason": reason, "path": path},
-        # the run's own size, so a filtered count is never mistaken for the whole
+        # What the *tree* said this run contained. Deliberately kept alongside
+        # `unfiltered_total` rather than replaced by it: the two can differ -- a degraded
+        # run stored no rows but still knows its tree count -- and that difference is what
+        # `stored_identity_holds` on the run endpoint exists to report.
         "run_entry_count": run.tree_entry_count,
         "items": [
             {

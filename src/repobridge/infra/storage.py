@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from datetime import datetime
 from typing import Any, Iterable, Sequence
 
 from sqlalchemy import func, insert, select, update
@@ -153,18 +154,78 @@ async def get_run(session: AsyncSession, run_id: str) -> AnalysisRun | None:
 
 
 async def list_runs(
-    session: AsyncSession, *, limit: int = 20, offset: int = 0
-) -> tuple[Sequence[AnalysisRun], int]:
-    """Runs newest first, plus the total count for pagination."""
-    total = await session.scalar(select(func.count()).select_from(AnalysisRun)) or 0
+    session: AsyncSession,
+    *,
+    status: str | None = None,
+    owner: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[Sequence[AnalysisRun], int, int]:
+    """
+    Runs newest first, with the matching total **and the unfiltered total**.
+
+    Both totals are returned, always, because a filtered count that looks like a whole
+    count is the failure this project keeps finding: `list_run_files` and
+    `list_run_chunks` already carry the run's own size for exactly this reason. A caller
+    holding `total: 3` needs to know whether that is three runs or three of ninety.
+
+    `owner` folds case because GitHub owner names are case-insensitive, and a filter that
+    misses `PSF` when the stored row says `psf` would silently under-report. Filtering on
+    a substring is deliberately not offered here: an exact owner is answerable from an
+    index, and "everything matching a fragment" is what the path filter on
+    `/files` is for, one level down.
+    """
+    unfiltered = await session.scalar(select(func.count()).select_from(AnalysisRun)) or 0
+
+    conditions = []
+    if status:
+        conditions.append(AnalysisRun.status == status)
+    if owner:
+        conditions.append(func.lower(AnalysisRun.owner) == owner.lower())
+    if since is not None:
+        conditions.append(AnalysisRun.created_at >= since)
+    if until is not None:
+        conditions.append(AnalysisRun.created_at <= until)
+
+    if conditions:
+        total = await session.scalar(
+            select(func.count()).select_from(AnalysisRun).where(*conditions)
+        ) or 0
+    else:
+        total = unfiltered
+
     stmt = (
         select(AnalysisRun)
+        .where(*conditions)
         .order_by(AnalysisRun.created_at.desc(), AnalysisRun.id.desc())
         .limit(limit)
         .offset(offset)
     )
     rows = (await session.execute(stmt)).scalars().all()
-    return rows, total
+    return rows, total, unfiltered
+
+
+async def count_run_files(session: AsyncSession, run_id: str) -> int:
+    """Rows stored for this run, ignoring every filter. The denominator for `total`."""
+    return await session.scalar(
+        select(func.count()).select_from(AnalysisFile).where(AnalysisFile.run_id == run_id)
+    ) or 0
+
+
+async def count_run_chunks(session: AsyncSession, run_id: str) -> int:
+    """Chunks stored for this run, ignoring every filter."""
+    return await session.scalar(
+        select(func.count()).select_from(AnalysisChunk).where(AnalysisChunk.run_id == run_id)
+    ) or 0
+
+
+async def count_run_events(session: AsyncSession, run_id: str) -> int:
+    """Events stored for this run, ignoring every filter."""
+    return await session.scalar(
+        select(func.count()).select_from(AnalysisEvent).where(AnalysisEvent.run_id == run_id)
+    ) or 0
 
 
 async def list_run_files(
@@ -521,14 +582,22 @@ async def list_run_events(
     *,
     stage: str | None = None,
     level: str | None = None,
-) -> Sequence[AnalysisEvent]:
+    limit: int | None = None,
+    offset: int = 0,
+) -> tuple[Sequence[AnalysisEvent], int]:
     """
     A run's events in pipeline order.
 
     Ordered by `sequence`, never by `created_at` alone: two events in the same millisecond
-    must not swap places between page loads. Not paginated -- the volume rules in
-    `core/diagnostics.py` keep a run to tens of events, not thousands, which is the whole
-    point of aggregating rather than writing a row per file.
+    must not swap places between page loads.
+
+    **Paginated, despite the volume rules.** `core/diagnostics.py` keeps one analysis to
+    tens of events by aggregating rather than writing a row per file, and for a single
+    analysis that bound holds. It does not hold for a *run*: `POST /runs/{id}/summarize`
+    appends to the same timeline every time it is called, and nothing caps how often a
+    caller may re-summarise. An endpoint whose response grows without limit is not a
+    stable API contract, so this takes the same `limit`/`offset` as files and chunks.
+    `limit=None` returns everything, which is what the UI page uses.
     """
     conditions = [AnalysisEvent.run_id == run_id]
     if stage:
@@ -544,7 +613,12 @@ async def list_run_events(
         # when they do. Ordering must never be able to depend on when the page is loaded.
         .order_by(AnalysisEvent.sequence, AnalysisEvent.id)
     )
-    return (await session.execute(stmt)).scalars().all()
+    total = await session.scalar(
+        select(func.count()).select_from(AnalysisEvent).where(*conditions)
+    ) or 0
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
+    return (await session.execute(stmt)).scalars().all(), total
 
 
 async def next_event_sequence(session: AsyncSession, run_id: str) -> int:

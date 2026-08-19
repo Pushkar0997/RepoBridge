@@ -276,7 +276,7 @@ def test_a_failed_run_has_nothing_to_summarise(install_transport, provider):
         lambda ref: httpx.Response(200, json=_tree_body([])),
         metadata_responder=lambda request: httpx.Response(404, json={"message": "Not Found"}),
     )
-    run_id = client.post("/api/analyze", json={"repo_url": REPO_URL}).json()["detail"]["run_id"]
+    run_id = client.post("/api/analyze", json={"repo_url": REPO_URL}).json()["error"]["details"]["run_id"]
 
     retry = client.post(f"/api/runs/{run_id}/summarize").json()
 

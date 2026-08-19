@@ -1094,6 +1094,184 @@ open.
 
 ---
 
+### Recorded verdict — 2026-08-19
+
+Judged against the code as it stands. A criterion is PASS only where a test or a recorded
+live result backs it. Test suite at time of judging: **535 passing, 0 skipped**, of which
+**48** are the new `tests/test_api_contract.py`.
+
+**No live calls were spent on this milestone, and none were needed.** Milestone 8 changed
+response and error shapes, not pipeline behaviour: every claim below is about what the
+application returns, which mocked transports exercise exactly. The live evidence this
+verdict leans on is `smoke.md` Run 10, unchanged — the honesty fields it recorded are
+asserted to still exist and still mean the same thing by
+`test_the_honesty_fields_are_all_still_present_and_still_mean_what_they_meant`.
+
+#### The spec's endpoint list is out of date, and was not followed blindly
+
+`spec.md` section 9 predates Milestones 5, 6 and 7 and disagrees with what was built in
+three places. Recorded rather than silently reconciled:
+
+| `spec.md` §9 says | Reality | Resolution |
+|---|---|---|
+| "viewing tree" | No `GET /api/runs/{run_id}/tree` exists. The tree is stored as classified entries and served by `/files` | **Not built, deliberately.** A second endpoint returning the same rows in a different shape would be two contracts for one fact. Recorded in the README under "Web UI pages" so the absence is a stated decision, not a hole |
+| — (absent) | `GET /api/runs/{run_id}/summary` exists | Built in Milestone 6. §9 was written before summaries existed |
+| — (absent) | `POST /api/runs/{run_id}/summarize` exists | Added by `spec.md`'s own Decision 4 amendment, which §9 was never updated to match |
+| — (absent) | `GET /health` exists | Milestone 0 |
+
+`evals.md`'s "Suggested checks" list has the same gap: it names
+`GET /api/runs/{run_id}/tree`, which has never existed. Both documents are left as written
+rather than edited to match the code, because amending a spec to describe what was built
+is how a spec stops being a spec. The disagreement is recorded here and in the README.
+
+#### Criteria
+
+| Criterion | Source | Verdict | Evidence |
+|---|---|---|---|
+| Endpoints for runs, tree, files, chunks, diagnostics | plan D1 | PASS, with the tree exception above | Nine endpoints, all answering: `test_every_documented_endpoint_answers` parametrises over the app's own OpenAPI schema and asserts a 200 and a JSON content type for each |
+| Consistent JSON response schema | plan D2 | PASS | One pagination envelope — `total`, `unfiltered_total`, `limit`, `offset`, `items`, `filters` — asserted for all four list endpoints by `test_every_list_endpoint_returns_the_same_pagination_fields`, with paging behaviour asserted identically by `test_limit_and_offset_behave_identically_everywhere` |
+| API tests | plan D3 | PASS | `tests/test_api_contract.py`, 48 tests, written to sweep every endpoint rather than sample one — the defect being fixed was cross-endpoint drift, which a representative test cannot see |
+| External scripts can consume analysis results | plan E1 | PASS | One error shape means one parser: `test_a_schema_violation_uses_the_same_envelope_as_everything_else` pins the case that made this false before, where `detail` held an object for our errors and a list for FastAPI's |
+| Missing or invalid resources return clear errors | plan E2 | PASS | `test_every_run_scoped_endpoint_404s_with_the_same_envelope` over all six run-scoped endpoints; `test_a_rejected_filter_value_uses_the_envelope_and_lists_what_is_valid` checks the accepted set travels in `details.valid` as data rather than only inside an English sentence |
+| API responses remain consistent | plan E3 | PASS | `test_the_404_message_is_identical_across_every_endpoint` — six endpoints previously carried six copies of one f-string; there is now one copy, in `api/errors.py:run_not_found` |
+| Run endpoint smoke tests | plan V1 | PASS | The parametrised answer test above is exactly this, run on every endpoint on every suite run rather than by hand once |
+| Confirm response structure | plan V2 | PASS | as D2 |
+| Confirm error formatting consistency | plan V3 | PASS | `_assert_envelope` asserts the key set exactly — `{status, code, message, details}`, `details` always an object — and is applied to 404, 400, 405, 422 and 500 paths, including Starlette's own unrouted-path 404 and wrong-method 405, which never pass through our helpers |
+| Endpoints return correct JSON | evals | PASS | as D1/D2 |
+| Endpoints are stable and predictable | evals | PASS | as E3. Enforced by construction: handlers are installed on the app, so an endpoint cannot opt out and a new endpoint cannot forget to opt in |
+| Missing resources return clean errors | evals | PASS | as E2 |
+| API can be used programmatically without guessing response shape | evals | PASS | The envelope documents a stable `code` field and says to match on it rather than on prose. `test_the_readme_documents_the_error_codes_the_api_actually_raises` keeps the documented code list complete |
+| All documented endpoints behave as expected | evals success | PASS | Documentation is now executable in both directions: `test_the_readme_documents_every_endpoint_that_exists` and `test_the_readme_documents_no_endpoint_that_does_not_exist`, read from `app.openapi()` |
+| Error formats are consistent | evals success | PASS | as V3 |
+| API contracts do not change silently | evals success | PASS | This is the strongest of the three, because it is the one with a mechanism rather than a promise: adding an endpoint without documenting it fails a test, documenting one that does not exist fails a test, adding an env var without documenting it fails a test, and adding a list endpoint without the shared envelope fails four |
+
+#### The consistency work, endpoint by endpoint
+
+**One error envelope.** Every non-2xx response is now
+`{"error": {"status", "code", "message", "details"}}`. Chosen over keeping FastAPI's
+`detail` because `detail` is meaningless to a consumer and, worse, keeping the name would
+keep the association with the list-shaped form being abandoned — a client written against
+the old `detail` would keep working for 404s and break silently on 422s. Renaming makes the
+break visible at the one moment before v0.1 ships where an API break is free.
+
+**Successes are not wrapped.** `tasks.md` suggests "consistent `data` and `error` fields or
+similar pattern". Wrapping every success in `data` would re-path every field in every
+consumer, template and test — including every honesty field whose exact location `smoke.md`
+cites — to convey nothing the status code does not already convey. The errors genuinely had
+two shapes; the successes did not.
+
+**Two endpoints solved pagination differently; diagnostics lost.** It returned its whole
+list under `events` with `total_events`, on the reasoning that the volume rules in
+`core/diagnostics.py` hold a run to tens of events. That reasoning covers one *analysis*,
+not one *run*: `POST /runs/{id}/summarize` appends to the same timeline every time it is
+called and nothing caps how often. So diagnostics takes `limit`/`offset` like the others,
+its list is `items` and its count is `total`. `test_diagnostics_paginates_like_the_others`
+re-summarises three times and asserts the timeline grew, which is the argument as a test.
+
+**Status codes name the faulting party.** The rule `_status_for` already applied to GitHub
+failures now covers everything: 4xx the caller, 429/502 GitHub, 500 RepoBridge. Two codes
+survive on the caller side on purpose — 422 for "could not parse your request", 400 for
+"parsed it and it is not acceptable" — and that line is tested
+(`test_a_well_formed_url_pointing_at_the_wrong_host_is_a_400_not_a_422`). Both carry a
+`code`, so a consumer that cares reads the code, not the status.
+
+**A 500 that says 500.** There was no unhandled-exception handler; a bug in this
+application produced whatever Starlette's default was. It now returns the envelope with
+`code: internal_error`, and deliberately **does not** include the exception text — an
+unhandled exception is the error path nobody wrote on purpose, so it is the least likely to
+have been checked for a token in its message. Asserted by
+`test_an_internal_failure_blames_this_application_and_leaks_nothing`, which raises an
+exception carrying a token-shaped string and asserts it is absent from the response.
+
+**`POST /runs/{id}/summarize` returns 200 even when the provider failed, deliberately.**
+The request did what it said: it attempted a re-summarisation and recorded the outcome,
+including diagnostics events. A 502 would imply nothing happened, when stored state
+changed. This blames nobody and matches `POST /api/analyze`, which has always returned 200
+with `summary.status` carrying the provider outcome. Documented in the README as "check
+`status`, not the HTTP code".
+
+#### The honesty fields survived, and are pinned
+
+`smoke.md` records a specific live failure behind each of these. Every one was checked
+after the reshape, and **none was renamed, moved or repurposed**:
+
+| Field | What it exists for | State |
+|---|---|---|
+| `tree_truncated`, `tree_error` | GitHub-side truncation must never be discoverable only by noticing a boolean (M2) | unchanged |
+| `accounts_for_every_entry` | the classification identity at 37,393 entries (M3, Run 4) | unchanged |
+| `read_cap`, `cap_applied`, `files_not_fetched`, `read_of_selected`, `accounts_for_every_selected_file` | the read cap, and the Run 8 finding that a capped run was grounded in the wrong 2% (M5, Runs 8–9) | unchanged |
+| `provenance.is_partial`, `limitations`, `chunks_excluded`, `token_budget` | a summary must disclose sparse coverage (M6, Run 8) | unchanged |
+| `run_entry_count`, `run_chunk_count`, `run_files_read`, `run_selected_count` | a filtered count must never be read as a whole one (M4/M5) | unchanged |
+| `counts_by_level`, `outcome`, per-stage roll-up | filters must never narrow the totals (M7, Run 10) | unchanged; only the list key beside them was renamed |
+
+The one rename in the whole milestone is diagnostics' `events` → `items` and
+`total_events` → `total`. Neither names a count, a cap, a truncation or a shortfall: they
+name *the list* and *its length*. The counts that carry meaning — `counts_by_level`,
+`outcome`, `stages` — are untouched and still computed over the whole run rather than the
+page, which `test_filtering_narrows_events_but_never_the_totals` still asserts.
+
+**`unfiltered_total` is additive, not a replacement.** It was tempting to fold
+`run_entry_count` into it. They are different numbers: `run_entry_count` is what the *tree*
+said the run contained, `unfiltered_total` is how many rows were actually stored, and the
+gap between them is exactly what `stored_identity_holds` exists to report. Both are kept,
+and `test_filtered_totals_on_files_and_chunks_never_read_as_whole_ones` pins both.
+
+#### Filtering on `/api/runs`
+
+`status`, `owner` (case-insensitive, because GitHub owner names are), `since` and `until`
+(ISO 8601, a bare date meaning midnight UTC, naive input stamped UTC rather than compared
+against a local clock the caller never mentioned). Substring search is deliberately not
+offered: an exact owner is answerable from an index, and "everything matching a fragment"
+is what the path filter one level down is for.
+
+The honesty rule holds by construction — `storage.list_runs` returns the matching total
+*and* the unfiltered total in one call, so an endpoint cannot report the first without the
+second. `test_date_filters_bound_the_result` asserts the sharp case: a filter matching
+nothing returns `total: 0` beside `unfiltered_total: 3`, never a zero that reads as an
+empty database.
+
+#### The README
+
+Rewritten. It had claimed extraction, summaries and diagnostics were "not built yet" for
+two milestones after they shipped, and documented none of `/chunks`, `/summary`,
+`/summarize` or `/diagnostics`. It now carries every endpoint with its request and response
+shape, the error envelope with its code table, all six environment variables with their
+defaults, and a Limitations section stating public-repos-only, the read cap with a real
+figure (`github/docs` selects 11,217 files; a default run reads 200), the provider's
+free-tier quota and the daily-quota retry decision, no migrations, and tree truncation.
+
+**Four tests make it executable**, which is the part that matters: documentation drift is
+what produced the defect, and prose cannot be trusted not to drift again. Adding an
+endpoint without documenting it fails; documenting one that does not exist fails; adding an
+environment variable to `config.py` without documenting it fails; and the specific
+regression — the "not built yet" claim — is asserted absent.
+
+#### Milestone 8 is closed
+
+Every plan deliverable exists, every expected behaviour is asserted across the whole
+surface rather than sampled, and all three `evals.md` success criteria are met with
+mechanisms rather than promises.
+
+**Caveats carried forward, recorded as notes rather than blockers:**
+
+- **`GET /api/runs/{run_id}/tree` is not built**, and `spec.md` §9 and `evals.md`'s
+  suggested-checks list both still name it. The decision and its reasoning are in the
+  README; the spec is left as written.
+- **The API surface has no versioning.** Paths are unprefixed (`/api/...`, not `/api/v1/`),
+  so the "contracts do not change silently" guarantee is enforced by tests within this
+  repository, not by anything a external consumer could pin. Acceptable for a local-first
+  single-user tool; it would not be for a published API.
+- **The error envelope is a breaking change** for anything written against the old
+  `{"detail": ...}` shape. Nothing has shipped, so nothing external breaks; the in-repo
+  consumer (`ui/static/js/main.js`) was updated in the same change.
+- **No live verification.** None was needed — see the head of this verdict — but it means
+  the envelope has only ever been produced against mocked transports and the local UI.
+- **The UI templates still use their own context names** (`total_events` in
+  `diagnostics.html`). The template context is not the API contract and renaming it buys
+  nothing; noted so the inconsistency is a decision rather than an oversight.
+
+---
+
 ## Milestone 9 – UI evals
 
 ### What to verify

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,11 +22,13 @@ from repobridge.core.github_client import (
     fetch_repo_tree,
     GitHubClientError,
 )
+from repobridge.api.errors import api_error, invalid_value, run_not_found
 from repobridge.core.diagnostics import Level, Recorder, Stage, rate_limit_details
 from repobridge.core.selection import ClassificationResult, classify_tree
 from repobridge.core.summarization import ChunkRef, SummaryResult, summarise
 from repobridge.infra import storage
 from repobridge.infra.db import get_session
+from repobridge.infra.schemas import RunStatus
 
 router = APIRouter(prefix="/api", tags=["runs"])
 
@@ -201,7 +204,7 @@ async def analyze_repo(
         # Deliberately not persisted: nothing reached GitHub and there is no run to attach
         # events to. storage.create_failed_run documents the same boundary.
         events.error(Stage.VALIDATION, e.message, repo_url=str(request.repo_url))
-        raise HTTPException(status_code=400, detail={"message": e.message})
+        raise api_error(400, "invalid_repo_url", e.message, repo_url=str(request.repo_url))
 
     events.info(
         Stage.VALIDATION,
@@ -252,9 +255,14 @@ async def analyze_repo(
 
         # the run_id travels with the error so a caller can open the failed run: it is
         # still a run, and it is the record of what went wrong
-        raise HTTPException(
-            status_code=_status_for(e),
-            detail={"message": e.message, "run_id": failed_run_id},
+        raise api_error(
+            _status_for(e),
+            "rate_limited" if e.is_rate_limit
+            else "repo_not_found" if e.status_code == 404
+            else "github_error",
+            e.message,
+            run_id=failed_run_id,
+            github_status=e.status_code,
         )
 
     events.info(
@@ -334,9 +342,9 @@ async def analyze_repo(
             await storage.persist_events(session, failed_run_id, events)
             # the run_id travels with the error so a caller can open the failed run,
             # as it does for a metadata failure
-            raise HTTPException(
-                status_code=404,
-                detail={"message": ref_message, "run_id": failed_run_id},
+            raise api_error(
+                404, "ref_not_found", ref_message,
+                run_id=failed_run_id, requested_ref=requested_ref,
             )
         # Metadata succeeded, so report the run as degraded rather than failed.
         # resolved_ref stays None: we never confirmed the ref exists, and the response
@@ -721,18 +729,76 @@ def _run_summary(run) -> dict:
     }
 
 
+RUNS_PAGE_DEFAULT = 20
+RUNS_PAGE_MAX = 100
+
+
+def _parse_when(value: str | None, field: str):
+    """
+    An ISO 8601 date or datetime, or a 400 naming the field.
+
+    A bare date is read as midnight UTC, so `since=2026-08-18` means "from the start of
+    that day" rather than "from whenever this process thinks midnight is". Naive input is
+    stamped UTC for the same reason: stored timestamps are UTC, and silently comparing a
+    local-clock value against them would filter by an offset the caller never gave.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise api_error(
+            400,
+            "invalid_value",
+            f"'{field}' must be an ISO 8601 date or timestamp, e.g. 2026-08-18 or "
+            f"2026-08-18T14:30:00Z. Received '{value}'.",
+            field=field,
+            value=value,
+        )
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 @router.get("/runs", response_class=JSONResponse)
 async def list_runs(
-    limit: int = Query(20, ge=1, le=100),
+    status: str | None = Query(None, description="completed | degraded | failed"),
+    owner: str | None = Query(None, description="repository owner, case-insensitive"),
+    since: str | None = Query(None, description="ISO 8601 date or timestamp, inclusive"),
+    until: str | None = Query(None, description="ISO 8601 date or timestamp, inclusive"),
+    limit: int = Query(RUNS_PAGE_DEFAULT, ge=1, le=RUNS_PAGE_MAX),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
 ):
-    """Recent runs, newest first."""
-    runs, total = await storage.list_runs(session, limit=limit, offset=offset)
+    """
+    Recent runs, newest first, filterable.
+
+    The filters are the three a diagnostics or UI consumer actually asks for: *what state
+    is it in*, *whose repository was it*, and *when*. Anything narrower is answerable from
+    a run's own endpoints once you have its id.
+
+    **`total` counts what matched; `unfiltered_total` counts every stored run.** Both are
+    always present, whether or not a filter was given, so a caller can never read a
+    filtered count as a whole one — the same rule `/files` and `/chunks` follow with
+    `run_entry_count` and `run_chunk_count`.
+    """
+    valid_statuses = sorted(st.value for st in RunStatus)
+    if status is not None and status not in valid_statuses:
+        raise invalid_value("status", status, valid_statuses)
+
+    runs, total, unfiltered = await storage.list_runs(
+        session,
+        status=status,
+        owner=owner,
+        since=_parse_when(since, "since"),
+        until=_parse_when(until, "until"),
+        limit=limit,
+        offset=offset,
+    )
     return {
         "total": total,
+        "unfiltered_total": unfiltered,
         "limit": limit,
         "offset": offset,
+        "filters": {"status": status, "owner": owner, "since": since, "until": until},
         "items": [_run_summary(r) for r in runs],
     }
 
@@ -747,7 +813,7 @@ async def get_run(run_id: str, session: AsyncSession = Depends(get_session)):
     """
     run = await storage.get_run(session, run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
+        raise run_not_found(run_id)
 
     summary = _run_summary(run)
     by_status = await storage.reconstruct_counts(session, run_id)
@@ -774,7 +840,7 @@ async def get_run_summary(run_id: str, session: AsyncSession = Depends(get_sessi
     """
     run = await storage.get_run(session, run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
+        raise run_not_found(run_id)
 
     return {
         "run_id": run.id,
@@ -860,7 +926,7 @@ async def resummarise_run(
     """
     run = await storage.get_run(session, run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
+        raise run_not_found(run_id)
 
     events = Recorder()
     events.info(

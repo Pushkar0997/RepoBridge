@@ -9,10 +9,11 @@ what came out of README.md" are both one query.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repobridge.api.errors import invalid_value, run_not_found
 from repobridge.core.extraction import ChunkType
 from repobridge.infra import storage
 from repobridge.infra.db import get_session
@@ -38,14 +39,11 @@ async def list_run_chunks(
 ):
     run = await storage.get_run(session, run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
+        raise run_not_found(run_id)
 
-    valid_types = {t.value for t in ChunkType}
+    valid_types = sorted(t.value for t in ChunkType)
     if chunk_type is not None and chunk_type not in valid_types:
-        raise HTTPException(
-            status_code=400,
-            detail={"message": f"Unknown chunk type '{chunk_type}'. Valid: {sorted(valid_types)}."},
-        )
+        raise invalid_value("chunk_type", chunk_type, valid_types)
 
     rows, total = await storage.list_run_chunks(
         session, run_id, chunk_type=chunk_type, path_contains=path, limit=limit, offset=offset
@@ -54,10 +52,13 @@ async def list_run_chunks(
     return {
         "run_id": run_id,
         "total": total,
+        # chunks stored for this run, ignoring every filter -- the standard denominator
+        "unfiltered_total": await storage.count_run_chunks(session, run_id),
         "limit": limit,
         "offset": offset,
         "filters": {"chunk_type": chunk_type, "path": path},
-        # the run's own totals, so a filtered count is never mistaken for the whole
+        # the run's own totals, from the run row: unchanged, and still the numbers a
+        # reader checks a summary against
         "run_chunk_count": run.chunk_count,
         "run_files_read": run.files_read,
         "run_selected_count": run.selected_count,

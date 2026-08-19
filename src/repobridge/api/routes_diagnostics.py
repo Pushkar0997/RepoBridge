@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repobridge.api.errors import run_not_found
 from repobridge.core.diagnostics import LEVEL_SEVERITY, STAGE_ORDER, Level, Stage
 from repobridge.infra import storage
 from repobridge.infra.db import get_session
@@ -72,34 +73,48 @@ def stage_rollup(events) -> list[dict]:
     return rows
 
 
+DIAGNOSTICS_PAGE_DEFAULT = 200
+DIAGNOSTICS_PAGE_MAX = 1000
+
+
 @router.get("/runs/{run_id}/diagnostics", response_class=JSONResponse)
 async def get_run_diagnostics(
     run_id: str,
     stage: str | None = Query(None),
     level: str | None = Query(None),
+    limit: int = Query(DIAGNOSTICS_PAGE_DEFAULT, ge=1, le=DIAGNOSTICS_PAGE_MAX),
+    offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
 ):
     """
     Every recorded event for a run, in the order the pipeline produced them.
 
     Filters are provided because "show me only what went wrong" is the common question;
-    they narrow `events` but never the `counts_by_level` roll-up, which always describes
-    the whole run. A filtered view that also filtered the totals would let a reader
-    conclude a run was clean by looking at it through a narrow enough lens.
+    they narrow `items` but never the `counts_by_level` roll-up, the `stages` strip or
+    `outcome`, which always describe the whole run. A filtered view that also filtered the
+    totals would let a reader conclude a run was clean by looking at it through a narrow
+    enough lens.
+
+    **Paginated like `/files` and `/chunks`, and named like them.** Diagnostics used to be
+    the one list endpoint that returned everything under a key of its own (`events`, with
+    `total_events`), on the reasoning that the volume rules keep a run to tens of events.
+    That reasoning covers one analysis, not one run: `POST /runs/{id}/summarize` appends
+    to this timeline every time it is called and nothing caps how often. So the list is
+    `items`, the count is `total`, and the shape is the shape every other paginated
+    endpoint uses. `unfiltered_total` is the run's whole timeline regardless of filters.
     """
     run = await storage.get_run(session, run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
+        raise run_not_found(run_id)
 
     # unknown filter values are ignored rather than 500ing, as the tree page does
     stage = stage if stage in {s.value for s in Stage} else None
     level = level if level in {lv.value for lv in Level} else None
 
-    all_events = await storage.list_run_events(session, run_id)
-    shown = (
-        all_events
-        if not (stage or level)
-        else await storage.list_run_events(session, run_id, stage=stage, level=level)
+    # The roll-ups are always computed over the whole timeline, never the page.
+    all_events, unfiltered_total = await storage.list_run_events(session, run_id)
+    shown, total = await storage.list_run_events(
+        session, run_id, stage=stage, level=level, limit=limit, offset=offset
     )
 
     counts = await storage.event_counts_by_level(session, run_id)
@@ -121,7 +136,10 @@ async def get_run_diagnostics(
         },
         "counts_by_level": {lv.value: counts.get(lv.value, 0) for lv in Level},
         "stages": stage_rollup(all_events),
-        "total_events": len(all_events),
+        "total": total,
+        "unfiltered_total": unfiltered_total,
+        "limit": limit,
+        "offset": offset,
         "filters": {"stage": stage, "level": level},
-        "events": [_event_payload(e) for e in shown],
+        "items": [_event_payload(e) for e in shown],
     }

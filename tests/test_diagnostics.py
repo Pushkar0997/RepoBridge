@@ -81,11 +81,11 @@ def _diagnostics(run_id, **params):
 
 
 def _stages(payload):
-    return [e["stage"] for e in payload["events"]]
+    return [e["stage"] for e in payload["items"]]
 
 
 def _find(payload, *, stage=None, level=None, contains=None, path=None):
-    out = payload["events"]
+    out = payload["items"]
     if stage:
         out = [e for e in out if e["stage"] == stage]
     if level:
@@ -117,7 +117,7 @@ def test_events_are_returned_in_pipeline_order(install_transport, provider):
     body = _analyze(install_transport)
     payload = _diagnostics(body["run_id"])
 
-    sequences = [e["sequence"] for e in payload["events"]]
+    sequences = [e["sequence"] for e in payload["items"]]
     assert sequences == sorted(sequences)
     stages = _stages(payload)
     assert stages.index("validation") < stages.index("metadata") < stages.index("tree")
@@ -141,7 +141,7 @@ def test_a_stage_that_never_ran_is_absent_rather_than_shown_as_healthy(install_t
         lambda ref: httpx.Response(200, json=_tree_body([])),
         metadata_responder=lambda request: httpx.Response(404, json={"message": "Not Found"}),
     )
-    run_id = client.post("/api/analyze", json={"repo_url": REPO_URL}).json()["detail"]["run_id"]
+    run_id = client.post("/api/analyze", json={"repo_url": REPO_URL}).json()["error"]["details"]["run_id"]
     payload = _diagnostics(run_id)
 
     assert "tree" not in _stages(payload)
@@ -191,7 +191,7 @@ def test_a_bad_ref_is_an_error_naming_the_ref(install_transport):
     assert resp.status_code == 404
 
     # the failed run is reachable from the error, as it is for a metadata failure
-    run_id = resp.json()["detail"]["run_id"]
+    run_id = resp.json()["error"]["details"]["run_id"]
     payload = _diagnostics(run_id)
 
     hits = _find(payload, stage="tree", level="error")
@@ -220,7 +220,7 @@ def test_a_bad_ref_run_records_that_the_repository_itself_resolved(install_trans
     resp = client.post(
         "/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "no-such-branch"}
     )
-    run_id = resp.json()["detail"]["run_id"]
+    run_id = resp.json()["error"]["details"]["run_id"]
     payload = _diagnostics(run_id)
 
     # metadata is an info event, not an error: that stage did its job
@@ -243,7 +243,7 @@ def test_a_bad_ref_leaves_a_readable_run_page(install_transport):
     resp = client.post(
         "/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "no-such-branch"}
     )
-    run_id = resp.json()["detail"]["run_id"]
+    run_id = resp.json()["error"]["details"]["run_id"]
 
     page = client.get(f"/runs/{run_id}/diagnostics").text
     assert "no-such-branch" in page
@@ -384,7 +384,7 @@ def test_filtering_narrows_events_but_never_the_totals(install_transport, provid
     unfiltered = _diagnostics(body["run_id"])
     filtered = _diagnostics(body["run_id"], level="info")
 
-    assert len(filtered["events"]) < len(unfiltered["events"])
+    assert len(filtered["items"]) < len(unfiltered["items"])
     assert filtered["counts_by_level"] == unfiltered["counts_by_level"]
     assert filtered["outcome"]["has_failures"] is True
 
@@ -417,7 +417,7 @@ def test_a_metadata_rate_limit_is_visible_in_diagnostics(install_transport):
     resp = client.post("/api/analyze", json={"repo_url": REPO_URL})
     assert resp.status_code == 429
 
-    payload = _diagnostics(resp.json()["detail"]["run_id"])
+    payload = _diagnostics(resp.json()["error"]["details"]["run_id"])
     hits = _find(payload, stage="metadata", level="error")
     assert hits, "a rate limit must appear in diagnostics, not only in the HTTP response"
     assert hits[0]["details"]["reason"] == "rate_limit"
@@ -433,7 +433,7 @@ def test_the_rate_limit_event_says_which_quota_and_when_it_resets(install_transp
         metadata_responder=lambda request: _rate_limited(),
     )
     resp = client.post("/api/analyze", json={"repo_url": REPO_URL})
-    details = _find(_diagnostics(resp.json()["detail"]["run_id"]), stage="metadata")[0]["details"]
+    details = _find(_diagnostics(resp.json()["error"]["details"]["run_id"]), stage="metadata")[0]["details"]
 
     assert details["kind"] == "primary"
     assert details["resource"] == "core"          # which quota
@@ -564,8 +564,8 @@ def test_a_large_run_does_not_write_a_row_per_entry(install_transport, provider)
 
     assert body["classification"]["total_entries"] == 2000
     assert body["classification"]["skipped_count"] == 1000
-    assert payload["total_events"] < 30, (
-        f"{payload['total_events']} events for a 2,000-entry run; diagnostics must "
+    assert payload["total"] < 30, (
+        f"{payload['total']} events for a 2,000-entry run; diagnostics must "
         "aggregate rather than write a row per entry"
     )
     # and the aggregate is still exact
@@ -583,7 +583,7 @@ def test_per_file_failure_events_are_capped_and_the_remainder_counted(install_tr
     body = _analyze(install_transport, entries, content_responder=content_responder)
     payload = _diagnostics(body["run_id"])
 
-    per_file = [e for e in payload["events"] if e["path"]]
+    per_file = [e for e in payload["items"] if e["path"]]
     assert len(per_file) == 50, f"expected the cap of 50, got {len(per_file)}"
 
     overflow = _find(payload, contains="not listed individually")
@@ -600,7 +600,7 @@ def test_a_file_that_succeeded_gets_no_row_of_its_own(install_transport, provide
     body = _analyze(install_transport)
     payload = _diagnostics(body["run_id"])
 
-    assert [e for e in payload["events"] if e["path"]] == []
+    assert [e for e in payload["items"] if e["path"]] == []
 
 
 # --------------------------------------------------------------------------
@@ -832,12 +832,12 @@ def test_re_summarising_appends_to_the_timeline_rather_than_reordering_it(
     body = _analyze(install_transport, [_blob("README.md", 40)])
     run_id = body["run_id"]
 
-    before = [e["sequence"] for e in _diagnostics(run_id)["events"]]
+    before = [e["sequence"] for e in _diagnostics(run_id)["items"]]
     assert before == sorted(before)
     assert before == list(range(len(before))), "the first write should number from zero"
 
     client.post(f"/api/runs/{run_id}/summarize")
-    after = _diagnostics(run_id)["events"]
+    after = _diagnostics(run_id)["items"]
     sequences = [e["sequence"] for e in after]
 
     # strictly increasing: no restart, and no two events claiming the same position
@@ -862,9 +862,9 @@ def test_re_summarising_twice_keeps_extending_the_same_timeline(install_transpor
     client.post(f"/api/runs/{run_id}/summarize")
     client.post(f"/api/runs/{run_id}/summarize")
 
-    sequences = [e["sequence"] for e in _diagnostics(run_id)["events"]]
+    sequences = [e["sequence"] for e in _diagnostics(run_id)["items"]]
     assert sequences == sorted(set(sequences)), f"not strictly increasing: {sequences}"
-    assert len([e for e in _diagnostics(run_id)["events"]
+    assert len([e for e in _diagnostics(run_id)["items"]
                 if "Re-summarising" in e["message"]]) == 2
 
 

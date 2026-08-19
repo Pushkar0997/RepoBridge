@@ -332,7 +332,7 @@ async def test_list_runs_is_newest_first(isolated_database):
         first, _ = await _store(session, MIXED)
         second, _ = await _store(session, MIXED)
 
-        runs, total = await storage.list_runs(session, limit=10)
+        runs, total, unfiltered = await storage.list_runs(session, limit=10)
         assert total == 2
         assert {r.id for r in runs} == {first, second}
         assert runs[0].created_at >= runs[1].created_at

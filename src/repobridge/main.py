@@ -11,6 +11,7 @@ import json
 from contextlib import asynccontextmanager
 from urllib.parse import urlencode
 
+from repobridge.api.errors import install_error_handlers, run_not_found
 from repobridge.api.routes_chunks import router as chunks_router
 from repobridge.api.routes_diagnostics import router as diagnostics_router
 from repobridge.api.routes_diagnostics import stage_rollup, worst_level
@@ -92,7 +93,7 @@ def tree_url(run_id: str, *, status=None, reason=None, path=None, offset: int = 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, session: AsyncSession = Depends(get_session)):
     """Root UI route: the analyze form plus recent runs."""
-    runs, total = await storage.list_runs(session, limit=10)
+    runs, total, _ = await storage.list_runs(session, limit=10)
     return templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -107,7 +108,7 @@ async def run_detail_page(
     """Run detail: metadata, status, counts and skip reasons for one stored run."""
     run = await storage.get_run(session, run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
+        raise run_not_found(run_id)
 
     chunk_sample, chunk_total = await storage.list_run_chunks(
         session, run_id, limit=CHUNK_PREVIEW_COUNT
@@ -148,7 +149,7 @@ async def run_tree_page(
     """
     run = await storage.get_run(session, run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
+        raise run_not_found(run_id)
 
     # unknown filter values are ignored rather than 500ing a page
     status = status if status in {s.value for s in StoredEntryStatus} else None
@@ -210,17 +211,15 @@ async def run_diagnostics_page(
     """
     run = await storage.get_run(session, run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
+        raise run_not_found(run_id)
 
     stage = stage if stage in {s.value for s in Stage} else None
     level = level if level in {lv.value for lv in Level} else None
 
-    all_events = await storage.list_run_events(session, run_id)
-    events = (
-        all_events
-        if not (stage or level)
-        else await storage.list_run_events(session, run_id, stage=stage, level=level)
-    )
+    # The page shows the whole timeline (no limit): it is one run's account, and the
+    # counts and stage strip below are computed over all of it regardless of filters.
+    all_events, _ = await storage.list_run_events(session, run_id)
+    events, _ = await storage.list_run_events(session, run_id, stage=stage, level=level)
 
     # decode the JSON details once, here, rather than filtering in the template
     for event in events:
@@ -259,3 +258,6 @@ app.include_router(runs_router)
 app.include_router(files_router)
 app.include_router(chunks_router)
 app.include_router(diagnostics_router)
+
+# One error envelope for every failure, including the UI pages. See api/errors.py.
+install_error_handlers(app)

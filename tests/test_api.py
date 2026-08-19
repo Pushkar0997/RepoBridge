@@ -183,7 +183,7 @@ def test_explicit_bad_ref_returns_404_naming_the_ref(install_transport):
     )
 
     assert resp.status_code == 404
-    message = resp.json()["detail"]["message"]
+    message = resp.json()["error"]["message"]
     assert "no-such-branch" in message
     assert f"{OWNER}/{REPO}" in message
 
@@ -270,7 +270,7 @@ def test_network_error_on_metadata_fails_the_request(install_transport):
 
     # no status_code on the error -> 502, not a 500 with a traceback
     assert resp.status_code == 502
-    message = resp.json()["detail"]["message"]
+    message = resp.json()["error"]["message"]
     assert "Could not reach the GitHub API" in message
     assert "Traceback" not in message
 
@@ -434,7 +434,7 @@ def test_explicit_bad_ref_still_404_not_a_null_resolved_ref(install_transport):
     resp = client.post("/api/analyze", json={"repo_url": REPO_URL, "branch_or_ref": "nope"})
 
     assert resp.status_code == 404
-    assert "nope" in resp.json()["detail"]["message"]
+    assert "nope" in resp.json()["error"]["message"]
 
 
 def test_truncated_tree_still_reports_resolved_ref(install_transport):
@@ -651,13 +651,13 @@ def test_upstream_503_maps_to_502(install_transport):
 def test_primary_rate_limit_maps_to_429_not_403(install_transport):
     resp = _metadata_status(install_transport, 403, {"X-RateLimit-Remaining": "0"})
     assert resp.status_code == 429
-    assert "rate limit exceeded" in resp.json()["detail"]["message"].lower()
+    assert "rate limit exceeded" in resp.json()["error"]["message"].lower()
 
 
 def test_secondary_rate_limit_maps_to_429(install_transport):
     resp = _metadata_status(install_transport, 403, {"Retry-After": "45"})
     assert resp.status_code == 429
-    message = resp.json()["detail"]["message"]
+    message = resp.json()["error"]["message"]
     assert "secondary rate limit" in message.lower()
     assert "Retry after 45 seconds" in message
 
@@ -665,7 +665,7 @@ def test_secondary_rate_limit_maps_to_429(install_transport):
 def test_genuine_403_stays_403(install_transport):
     resp = _metadata_status(install_transport, 403, {"X-RateLimit-Remaining": "4999"})
     assert resp.status_code == 403
-    assert "rate limit" not in resp.json()["detail"]["message"].lower()
+    assert "rate limit" not in resp.json()["error"]["message"].lower()
 
 
 def test_401_stays_401(install_transport):
@@ -905,11 +905,11 @@ def test_files_endpoint_rejects_unknown_filters(install_transport):
 def test_unknown_run_id_is_404_not_an_empty_result():
     missing = client.get("/api/runs/does-not-exist")
     assert missing.status_code == 404
-    assert "does-not-exist" in missing.json()["detail"]["message"]
+    assert "does-not-exist" in missing.json()["error"]["message"]
 
     files = client.get("/api/runs/does-not-exist/files")
     assert files.status_code == 404
-    assert "does-not-exist" in files.json()["detail"]["message"]
+    assert "does-not-exist" in files.json()["error"]["message"]
 
 
 def test_runs_list_is_empty_before_any_analysis():
@@ -1107,7 +1107,7 @@ def test_run_detail_page_renders_a_failed_run(install_transport):
         metadata_responder=lambda request: httpx.Response(404, json={"message": "Not Found"}),
     )
     resp = client.post("/api/analyze", json={"repo_url": REPO_URL})
-    run_id = resp.json()["detail"]["run_id"]
+    run_id = resp.json()["error"]["details"]["run_id"]
 
     page = client.get(f"/runs/{run_id}")
     assert page.status_code == 200
@@ -1122,7 +1122,7 @@ def test_failed_run_id_travels_with_the_error(install_transport):
         lambda ref: httpx.Response(200, json=_tree_body([])),
         metadata_responder=lambda request: httpx.Response(404, json={"message": "Not Found"}),
     )
-    detail = client.post("/api/analyze", json={"repo_url": REPO_URL}).json()["detail"]
+    detail = client.post("/api/analyze", json={"repo_url": REPO_URL}).json()["error"]["details"]
     assert detail["run_id"]
     assert client.get(f"/runs/{detail['run_id']}").status_code == 200
 
