@@ -21,6 +21,13 @@ from repobridge.api.routes_runs import router as runs_router
 from repobridge.core.diagnostics import Level, Stage
 from repobridge.core.selection import SkipReason
 from repobridge.infra import storage
+from repobridge.config import (
+    DEFAULT_GITHUB_CONFIG,
+    DEFAULT_SUMMARIZATION_CONFIG,
+    get_gemini_api_key,
+    get_github_token,
+    get_summarization_config,
+)
 from repobridge.infra.db import get_database, get_session
 from repobridge.infra.schemas import RunStatus, StoredEntryStatus
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -89,6 +96,27 @@ def tree_url(run_id: str, *, status=None, reason=None, path=None, offset: int = 
         params["offset"] = offset
     query = urlencode(params)
     return f"/runs/{run_id}/tree" + (f"?{query}" if query else "")
+
+
+def _key_status() -> dict:
+    """
+    Whether each key is configured. **Booleans and variable names only.**
+
+    Never the value, and never a masked form of it either: a mask still discloses length
+    and usually the first characters, which is a leak with a reassuring shape. The only
+    facts this returns about a key are that it is set or that it is not.
+
+    Read at call time, like every other config accessor here, so setting a key and
+    reloading the page reflects it without restarting the process.
+    """
+    return {
+        "github": bool(get_github_token()),
+        "gemini": bool(get_gemini_api_key()),
+        "github_env": DEFAULT_GITHUB_CONFIG.token_env_var,
+        "gemini_env": DEFAULT_SUMMARIZATION_CONFIG.api_key_env_var,
+        "model_env": DEFAULT_SUMMARIZATION_CONFIG.model_env_var,
+        "model": get_summarization_config().model,
+    }
 
 
 #: How many runs the home page lists. Small on purpose: it is a recent-runs list, not a
@@ -164,6 +192,7 @@ async def index(
             "filtered": bool(status or owner or _ui_date(since) or _ui_date(until)),
             "bad_dates": bad_dates,
             "statuses": [s.value for s in RunStatus],
+            "keys": _key_status(),
         },
     )
 
@@ -194,6 +223,7 @@ async def run_detail_page(
             "summary_provenance": (
                 json.loads(run.summary_provenance) if run.summary_provenance else None
             ),
+            "keys": _key_status(),
         },
     )
 

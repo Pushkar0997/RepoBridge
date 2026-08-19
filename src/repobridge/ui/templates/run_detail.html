@@ -106,6 +106,13 @@
   {% elif run.summary_status == 'not_configured' %}
     <div class="notice">
       <strong>Summaries are not configured.</strong> {{ run.summary_error }}
+      {# The consequence is visible here; the remedy should be too, rather than only on
+         the home page. The variable name, never the value. #}
+      <p class="muted small">
+        Set <span class="mono">{{ keys.gemini_env }}</span> and restart, then use the
+        button below &mdash; the content for this run is already stored, so no GitHub
+        request is needed.
+      </p>
     </div>
   {% elif run.summary_status == 'provider_error' %}
     <div class="notice notice-error">

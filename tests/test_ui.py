@@ -565,3 +565,151 @@ def test_the_repository_name_is_not_printed_three_times_on_the_detail_page(
     # but the sibling pages, whose headings are "Files" and "Diagnostics", still say it
     for page in (f"/runs/{run_id}/tree", f"/runs/{run_id}/diagnostics"):
         assert 'class="run-nav-repo' in client.get(page).text
+
+
+# --------------------------------------------------------------------------
+# key status: visible, and never the value
+# --------------------------------------------------------------------------
+
+GITHUB_TOKEN = "ghp_UITOKENMUSTNEVERREACHATEMPLATE00000"
+GEMINI_KEY = "AIzaSyUIKEYMUSTNEVERREACHATEMPLATE000000"
+
+
+def test_the_home_page_says_when_neither_key_is_configured(monkeypatch):
+    """
+    The gap this closes: RepoBridge degrades correctly without either key and nothing
+    said so. A person with no token met a rate-limit error with no hint that a token
+    fixes it; a person with no key met `not_configured` with no hint it was a setting.
+    """
+    monkeypatch.delenv("REPOBRIDGE_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("REPOBRIDGE_GEMINI_API_KEY", raising=False)
+    html = client.get("/").text
+
+    assert "Configuration" in html
+    # assert on the state element, not on the word anywhere: the prose legitimately
+    # contains "not_configured", which is the summary status a keyless run reports
+    assert html.count('class="key-state">not set<') == 2, "both keys report their state"
+    assert 'class="key-state">configured<' not in html
+
+    # the consequence, named
+    assert "60 requests per hour" in html
+    assert "No summaries will be generated." in html
+    # and the remedy, by variable name
+    assert "REPOBRIDGE_GITHUB_TOKEN" in html
+    assert "REPOBRIDGE_GEMINI_API_KEY" in html
+
+
+def test_the_home_page_says_when_both_keys_are_configured(monkeypatch):
+    monkeypatch.setenv("REPOBRIDGE_GITHUB_TOKEN", GITHUB_TOKEN)
+    monkeypatch.setenv("REPOBRIDGE_GEMINI_API_KEY", GEMINI_KEY)
+    html = client.get("/").text
+
+    assert html.count('class="key-state">configured<') == 2
+    assert 'class="key-state">not set<' not in html
+    assert "5,000 per hour" in html
+    assert "gemini-3.5-flash-lite" in html, "the model is not a secret and is worth naming"
+
+
+def test_each_key_is_reported_independently(monkeypatch):
+    """One set and one not is the common case and must not be reported as either extreme."""
+    monkeypatch.setenv("REPOBRIDGE_GITHUB_TOKEN", GITHUB_TOKEN)
+    monkeypatch.delenv("REPOBRIDGE_GEMINI_API_KEY", raising=False)
+    html = client.get("/").text
+
+    assert html.count('class="key-state">not set<') == 1
+    assert html.count('class="key-state">configured<') == 1
+    assert "5,000 per hour" in html            # github: on
+    assert "No summaries will be generated." in html   # gemini: off
+
+
+def test_the_key_state_is_read_at_request_time(monkeypatch):
+    """Setting a key and reloading reflects it, without restarting the process."""
+    monkeypatch.delenv("REPOBRIDGE_GEMINI_API_KEY", raising=False)
+    assert "No summaries will be generated." in client.get("/").text
+    monkeypatch.setenv("REPOBRIDGE_GEMINI_API_KEY", GEMINI_KEY)
+    assert "No summaries will be generated." not in client.get("/").text
+
+
+def test_no_key_value_can_reach_a_template(install_transport, monkeypatch, provider):
+    """
+    A value scan over every rendered page, as the storage and diagnostics layers are
+    tested -- not a check that the variable *names* are absent, which they deliberately
+    are not.
+
+    A masked value would fail this too, and should: a mask still discloses length and
+    usually the leading characters. Configured or not configured, nothing more.
+    """
+    provider()  # the suite forbids live provider calls; this injects a stub
+    monkeypatch.setenv("REPOBRIDGE_GITHUB_TOKEN", GITHUB_TOKEN)
+    monkeypatch.setenv("REPOBRIDGE_GEMINI_API_KEY", GEMINI_KEY)
+
+    run_id = make_completed(install_transport)
+    pages = ["/", f"/runs/{run_id}", f"/runs/{run_id}/tree", f"/runs/{run_id}/diagnostics"]
+
+    for page in pages:
+        body = client.get(page).text
+        assert GITHUB_TOKEN not in body, f"the GitHub token reached {page}"
+        assert GEMINI_KEY not in body, f"the Gemini key reached {page}"
+        # no partial reveal either: no run of 8+ characters from either key
+        for secret in (GITHUB_TOKEN, GEMINI_KEY):
+            for start in range(0, len(secret) - 8):
+                assert secret[start : start + 8] not in body, (
+                    f"an 8-character fragment of a key reached {page}"
+                )
+
+
+def test_the_key_status_context_carries_booleans_not_values(monkeypatch):
+    """Enforced where it is built, so no future template can render what is not there."""
+    from repobridge.main import _key_status
+
+    monkeypatch.setenv("REPOBRIDGE_GITHUB_TOKEN", GITHUB_TOKEN)
+    monkeypatch.setenv("REPOBRIDGE_GEMINI_API_KEY", GEMINI_KEY)
+    status = _key_status()
+
+    assert status["github"] is True and status["gemini"] is True
+    for value in status.values():
+        assert GITHUB_TOKEN not in str(value)
+        assert GEMINI_KEY not in str(value)
+
+
+def test_a_run_without_a_key_says_how_to_fix_it_where_the_consequence_shows(
+    install_transport, monkeypatch
+):
+    """The remedy belongs beside the symptom, not only on the home page."""
+    monkeypatch.delenv("REPOBRIDGE_GEMINI_API_KEY", raising=False)
+    run_id = make_completed(install_transport)
+    html = client.get(f"/runs/{run_id}").text
+
+    assert "Summaries are not configured." in html
+    assert "REPOBRIDGE_GEMINI_API_KEY" in html
+    assert "the content for this run is already stored" in html
+
+
+def test_the_key_panel_is_only_on_the_home_page(install_transport, provider):
+    """It is a setup affordance, not a banner to repeat on every screen."""
+    provider()
+    run_id = make_completed(install_transport)
+    assert 'class="card config-panel"' in client.get("/").text
+    for page in (f"/runs/{run_id}/tree", f"/runs/{run_id}/diagnostics"):
+        assert "config-panel" not in client.get(page).text
+
+
+# --------------------------------------------------------------------------
+# the visual pass did not weaken the state flags
+# --------------------------------------------------------------------------
+
+
+def test_state_flags_still_carry_their_words_after_the_restyle(
+    install_transport, provider, monkeypatch
+):
+    """Colour is reinforcement. The word is the information, and it is in the markup."""
+    monkeypatch.setenv("REPOBRIDGE_MAX_FILES_PER_RUN", "2")
+    provider()
+    make_partial(install_transport)
+    make_truncated(install_transport)
+
+    html = client.get("/").text
+    assert ">capped</span>" in html
+    assert ">truncated</span>" in html
+    # a flag is a flag, distinguishable from a status badge by class as well as by shape
+    assert 'class="flag flag-warn"' in html
