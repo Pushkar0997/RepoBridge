@@ -1,0 +1,47 @@
+{#
+  The four run views are one set, so they get one navigation strip.
+
+  Before this, each page hand-rolled its own breadcrumb and each had a different subset:
+  the run detail page linked to all three siblings, the diagnostics page to all three, and
+  the **tree page to one** -- so a person browsing a 37,393-entry listing could not reach
+  that run's diagnostics without editing the URL. Three copies of one idea meant the
+  incomplete copy went unnoticed for five milestones.
+
+  `aria-current="page"` marks the current view, so the active item is not conveyed by
+  weight and colour alone.
+
+  Expects `run` and `current` ('detail' | 'tree' | 'diagnostics') in the context.
+#}
+<nav class="run-nav" aria-label="Views of this run">
+  <a href="/">&larr; All runs</a>
+  <span class="run-nav-sep" aria-hidden="true">&middot;</span>
+
+  {% if current == 'detail' %}
+    <span class="run-nav-here" aria-current="page">Run detail</span>
+  {% else %}
+    <a href="/runs/{{ run.id }}">Run detail</a>
+  {% endif %}
+  <span class="run-nav-sep" aria-hidden="true">&middot;</span>
+
+  {% if current == 'tree' %}
+    <span class="run-nav-here" aria-current="page">File listing</span>
+  {% else %}
+    <a href="/runs/{{ run.id }}/tree">File listing</a>
+  {% endif %}
+  <span class="run-nav-sep" aria-hidden="true">&middot;</span>
+
+  {% if current == 'diagnostics' %}
+    <span class="run-nav-here" aria-current="page">Diagnostics</span>
+  {% else %}
+    <a href="/runs/{{ run.id }}/diagnostics">Diagnostics</a>
+  {% endif %}
+
+  {#
+    Which repository this is, on the pages whose own heading does not say so. The detail
+    page's <h2> is the repository name, so repeating it in the strip above would be the
+    third copy on one screen after the document title.
+  #}
+  {% if current != 'detail' %}
+    <span class="run-nav-repo muted">{{ run.owner }}/{{ run.name }}</span>
+  {% endif %}
+</nav>

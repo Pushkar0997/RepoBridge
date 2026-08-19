@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_state_flags.html" import state_flags %}
 
 {#
   The diagnostics page is the deliverable a person actually looks at, so it is a timeline,
@@ -14,16 +15,13 @@
 #}
 
 {% block content %}
-<p class="muted">
-  <a href="/">&larr; All runs</a> &middot;
-  <a href="/runs/{{ run.id }}">Run detail</a> &middot;
-  <a href="/runs/{{ run.id }}/tree">File listing</a>
-</p>
+{% with current = 'diagnostics' %}{% include "_run_nav.html" %}{% endwith %}
 
 <section>
   <h2>
     Diagnostics
     <span class="badge badge-{{ run.status }}">{{ run.status }}</span>
+    {{ state_flags(run) }}
   </h2>
   <p class="muted">
     {{ run.owner }}/{{ run.name }} &middot; run {{ run.id }}
@@ -113,19 +111,19 @@
   <h3>Timeline</h3>
   <p class="muted small">
     {% if stage_filter or level_filter %}
-      Showing {{ events|length }} of {{ total_events }} events
+      Showing {{ events|length }} of {{ total }} events
       {% if stage_filter %}in stage <span class="mono">{{ stage_filter }}</span>{% endif %}
       {% if level_filter %}at level <span class="mono">{{ level_filter }}</span>{% endif %}.
       The counts above always describe the whole run, never the filtered view.
     {% else %}
-      {{ total_events }} events, in the order the pipeline produced them.
+      {{ total }} events, in the order the pipeline produced them.
     {% endif %}
   </p>
 
   {% if not events %}
     <p class="muted">
       No events matched.
-      {% if total_events == 0 %}
+      {% if total == 0 %}
         This run was recorded before diagnostics existed, so it has no timeline.
       {% endif %}
     </p>

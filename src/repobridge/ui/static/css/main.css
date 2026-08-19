@@ -284,3 +284,121 @@ button:disabled { background: #9bb8e6; cursor: progress; }
 }
 .details dt { color: #6b7280; }
 .details dd { margin: 0; word-break: break-word; }
+
+
+/* --- accessibility ------------------------------------------------------- */
+
+/* Visible to assistive tech, not on screen. Used for table captions and for the
+   per-row link labels, so "files" and "diagnostics" repeated down a column are
+   distinguishable when read out of context. */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: #fff;
+  padding: 0.5rem 1rem;
+  border: 2px solid #1f6feb;
+  border-radius: 0 0 4px 0;
+  z-index: 10;
+}
+.skip-link:focus { left: 0; }
+
+/* One visible focus treatment for everything interactive. Before this the app relied on
+   whatever each browser drew by default, which on links styled with
+   `text-decoration: none` -- the chips, the count cards, the pager -- was easy to lose. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+.chip:focus-visible,
+.button-link:focus-visible,
+.count-card:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid #1f6feb;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+main:focus { outline: none; }
+
+header h1 a { color: inherit; text-decoration: none; }
+header h1 a:hover { text-decoration: underline; }
+
+
+/* --- run navigation ------------------------------------------------------ */
+
+.run-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 1rem;
+  font-size: 0.92rem;
+}
+.run-nav-sep { color: #bbb; }
+/* The current view is marked with weight *and* `aria-current`, not colour alone. */
+.run-nav-here { font-weight: 600; color: #333; }
+.run-nav-repo { margin-left: auto; font-size: 0.85rem; }
+
+
+/* --- state flags --------------------------------------------------------- */
+
+/* Each flag carries its own word. Colour reinforces the word; it never replaces it. */
+.flag {
+  display: inline-block;
+  padding: 0.05rem 0.45rem;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  border: 1px solid;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.flag-warn  { background: #fdf3e2; color: #7a4b06; border-color: #f0d9ac; }
+.flag-bad   { background: #fdeaea; color: #8a1c1c; border-color: #f2c2c2; }
+.flag-muted { background: #f1f2f4; color: #555f70; border-color: #d8dce3; }
+
+
+/* --- forms --------------------------------------------------------------- */
+
+.field { margin: 0 0 0.9rem; }
+.field label { display: block; margin-bottom: 0.25rem; }
+.field .small { display: block; margin-top: 0.2rem; }
+
+.field-inline { display: inline-flex; align-items: center; gap: 0.35rem; }
+.field-inline label { font-size: 0.85rem; color: #555; font-weight: 500; }
+
+.form-actions { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+
+select {
+  padding: 0.4rem;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+  background: #fff;
+}
+
+.row-links a { margin-right: 0.6rem; font-size: 0.85rem; white-space: nowrap; }
+
+
+/* --- responsive ---------------------------------------------------------- */
+
+@media (max-width: 700px) {
+  main { padding: 1rem 0.75rem; }
+  .run-nav-repo { margin-left: 0; width: 100%; }
+  table, thead, tbody, th, td, tr { font-size: 0.88rem; }
+  .filters { gap: 0.5rem; }
+  .field-inline { width: 100%; }
+  .field-inline input, .field-inline select { flex: 1; min-width: 0; }
+}

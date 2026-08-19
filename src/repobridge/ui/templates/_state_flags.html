@@ -1,0 +1,30 @@
+{#
+  What happened to a run, at a glance, beyond `status`.
+
+  `status` alone answers completed/degraded/failed. It does not distinguish a run that
+  read everything from one that read 20 of 107, or a listing GitHub truncated, or a run
+  with no summary -- and in the recent-runs list those looked identical. Every flag here
+  reads a column that already exists and already means this; nothing is recomputed and no
+  new judgement is invented.
+
+  **Text, not colour.** Each flag carries its own word. Colour reinforces; it never
+  carries the meaning on its own. `title` adds the number for a reader who hovers, and the
+  visible text is complete without it.
+
+  Expects `run`. Renders nothing for a clean, complete run -- absence of flags is itself
+  the signal, and a row of green "all fine" badges would be noise on every line.
+#}
+{% macro state_flags(run) -%}
+  {%- if run.tree_truncated %}
+    <span class="flag flag-warn" title="GitHub truncated the tree; the repository contains more entries than were stored.">truncated</span>
+  {%- endif %}
+  {%- if run.files_not_fetched %}
+    <span class="flag flag-warn" title="{{ run.files_not_fetched }} selected file(s) were not read: this run reads at most {{ run.read_cap }}.">capped</span>
+  {%- endif %}
+  {%- if run.files_read_failed %}
+    <span class="flag flag-bad" title="{{ run.files_read_failed }} selected file(s) could not be read or decoded.">read errors</span>
+  {%- endif %}
+  {%- if run.status == 'completed' and run.summary_status and run.summary_status != 'ok' %}
+    <span class="flag flag-muted" title="Summary status: {{ run.summary_status }}.">no summary</span>
+  {%- endif %}
+{%- endmacro %}

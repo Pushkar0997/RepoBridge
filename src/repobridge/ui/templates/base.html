@@ -7,13 +7,16 @@
   <link rel="stylesheet" href="/static/css/main.css">
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
   <header>
-    <h1>RepoBridge</h1>
+    {# The wordmark is the way home from every page, which is where people look for it. #}
+    <h1><a href="/">RepoBridge</a></h1>
     <p>Local-first GitHub repo inspector for grounded LLM context.</p>
     <hr>
   </header>
 
-  <main>
+  <main id="main" tabindex="-1">
     {% block content %}{% endblock %}
   </main>
 

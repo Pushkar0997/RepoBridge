@@ -1,10 +1,15 @@
 {% extends "base.html" %}
+{% from "_state_flags.html" import state_flags %}
 
 {% block content %}
-<p class="muted"><a href="/runs/{{ run.id }}">&larr; {{ run.owner }}/{{ run.name }}</a></p>
+{% with current = 'tree' %}{% include "_run_nav.html" %}{% endwith %}
 
 <section>
-  <h2>Files</h2>
+  <h2>
+    Files
+    <span class="badge badge-{{ run.status }}">{{ run.status }}</span>
+    {{ state_flags(run) }}
+  </h2>
 
   {#
     The honesty line. Always rendered, never conditional on the list being long: a reader

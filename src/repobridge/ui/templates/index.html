@@ -1,55 +1,156 @@
 {% extends "base.html" %}
+{% from "_state_flags.html" import state_flags %}
 
 {% block content %}
 <section>
   <h2>Analyze a GitHub repository</h2>
   <p class="muted">
     Paste a public GitHub repo URL. RepoBridge fetches the tree, classifies every entry,
-    and stores the run so you can come back to it.
+    reads what it can, and stores the run so you can come back to it.
   </p>
 
   <form id="analyze-form">
-    <label for="repo_url">Repository URL</label><br>
-    <input type="url" id="repo_url" name="repo_url"
-           placeholder="https://github.com/owner/repo" required class="wide"><br><br>
+    <div class="field">
+      <label for="repo_url">Repository URL</label>
+      <input type="url" id="repo_url" name="repo_url"
+             placeholder="https://github.com/owner/repo" required class="wide"
+             aria-describedby="repo_url-help">
+      <span id="repo_url-help" class="muted small">Public repositories only.</span>
+    </div>
 
-    <label for="branch_or_ref">Branch or ref (optional)</label><br>
-    <input type="text" id="branch_or_ref" name="branch_or_ref" placeholder="defaults to the repo's default branch"><br><br>
+    <div class="field">
+      <label for="branch_or_ref">Branch or ref <span class="muted">(optional)</span></label>
+      <input type="text" id="branch_or_ref" name="branch_or_ref"
+             placeholder="defaults to the repository's default branch">
+    </div>
 
-    <button type="submit" id="analyze-button">Analyze</button>
-    <span id="analyze-status" class="muted" role="status" aria-live="polite"></span>
+    <p class="form-actions">
+      <button type="submit" id="analyze-button">Analyze</button>
+      {#
+        Two feedback channels on purpose. `analyze-status` is a polite live region and
+        changes only at milestones, so a screen reader is not interrupted every second.
+        `analyze-elapsed` ticks once a second and is hidden from assistive tech, because a
+        running clock announced aloud is noise, not information.
+      #}
+      <span id="analyze-status" class="muted" role="status" aria-live="polite"></span>
+      <span id="analyze-elapsed" class="muted small mono" aria-hidden="true"></span>
+    </p>
   </form>
 
-  <div id="analyze-error" class="notice notice-error" hidden>
-    <strong>Analysis failed.</strong>
-    <p id="analyze-error-message"></p>
-    <p id="analyze-error-link" hidden>
-      The attempt was still recorded &mdash; <a href="#">open the failed run</a>.
-    </p>
-  </div>
+  {#
+    An empty live region, not pre-written prose hidden with `hidden`.
+
+    Before, this element shipped on every render carrying the words "Analysis failed." and
+    "The attempt was still recorded" whether or not anything had failed, relying on the
+    `hidden` attribute to keep it out of the accessibility tree -- which works, but is one
+    stray `display` rule on `.notice` away from not working, and was never announced when
+    it *did* appear because nothing marked it live. Now the container ships empty with
+    `role="alert"`, the script fills it, and a screen reader hears the failure at the
+    moment it happens.
+  #}
+  <div id="analyze-error" class="notice notice-error" role="alert" tabindex="-1" hidden></div>
 </section>
 
 <section>
   <h2>Recent runs</h2>
+
+  <form class="filters" method="get" action="/" aria-label="Filter runs">
+    <span class="field-inline">
+      <label for="f-status">Status</label>
+      <select id="f-status" name="status">
+        <option value="">any</option>
+        {% for s in statuses %}
+          <option value="{{ s }}" {{ 'selected' if status == s else '' }}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </span>
+    <span class="field-inline">
+      <label for="f-owner">Owner</label>
+      <input type="search" id="f-owner" name="owner" value="{{ owner or '' }}" placeholder="e.g. psf">
+    </span>
+    <span class="field-inline">
+      <label for="f-since">From</label>
+      <input type="date" id="f-since" name="since" value="{{ since or '' }}">
+    </span>
+    <span class="field-inline">
+      <label for="f-until">To</label>
+      <input type="date" id="f-until" name="until" value="{{ until or '' }}">
+    </span>
+    <button type="submit">Filter</button>
+    {% if filtered %}
+      <a class="chip" href="/">clear &times;</a>
+    {% endif %}
+  </form>
+
+  {% if bad_dates %}
+    <p class="muted small warn-inline">
+      Ignored an unreadable date: {{ bad_dates|join(', ') }}. Use YYYY-MM-DD.
+    </p>
+  {% endif %}
+
+  {#
+    The honesty line, same rule the file listing follows: a filtered count must never read
+    as the whole. Rendered whether or not a filter is active, so a reader never has to
+    infer which they are looking at.
+  #}
+  <p class="scope">
+    {% if total == 0 %}
+      Showing <strong>0</strong>
+      {%- if filtered %} matching runs (of {{ unfiltered_total }} stored)
+      {%- else %} stored runs{% endif %}.
+    {% else %}
+      Showing <strong>{{ runs|length }}</strong> of <strong>{{ total }}</strong>
+      {%- if filtered %} matching run{{ '' if total == 1 else 's' }}
+        (of {{ unfiltered_total }} stored)
+      {%- else %} stored run{{ '' if total == 1 else 's' }}{% endif %}.
+    {% endif %}
+  </p>
+
   {% if runs %}
-    <p class="muted">Showing {{ runs|length }} of {{ total_runs }} stored run{{ '' if total_runs == 1 else 's' }}.</p>
     <table>
+      <caption class="sr-only">Recent analysis runs, newest first</caption>
       <thead>
-        <tr><th>Repository</th><th>Status</th><th>Entries</th><th>Selected</th><th>Skipped</th><th>When</th></tr>
+        <tr>
+          <th scope="col">Repository</th>
+          <th scope="col">State</th>
+          <th scope="col" class="num">Entries</th>
+          <th scope="col" class="num">Selected</th>
+          <th scope="col" class="num">Read</th>
+          <th scope="col">When</th>
+          <th scope="col">Views</th>
+        </tr>
       </thead>
       <tbody>
         {% for run in runs %}
         <tr>
           <td><a href="/runs/{{ run.id }}">{{ run.owner }}/{{ run.name }}</a></td>
-          <td><span class="badge badge-{{ run.status }}">{{ run.status }}</span></td>
+          <td>
+            <span class="badge badge-{{ run.status }}">{{ run.status }}</span>
+            {{ state_flags(run) }}
+          </td>
           <td class="num">{{ run.tree_entry_count }}</td>
           <td class="num">{{ run.selected_count }}</td>
-          <td class="num">{{ run.skipped_count }}</td>
+          <td class="num">{{ run.files_read }}</td>
           <td class="muted">{{ run.created_at.strftime('%Y-%m-%d %H:%M UTC') if run.created_at else '' }}</td>
+          {#
+            More than the detail page. A run's three views are siblings; reaching the
+            file listing or the diagnostics timeline should not require opening the
+            detail page first and clicking again.
+          #}
+          <td class="row-links">
+            <a href="/runs/{{ run.id }}/tree">files<span class="sr-only"> for {{ run.owner }}/{{ run.name }}</span></a>
+            <a href="/runs/{{ run.id }}/diagnostics">diagnostics<span class="sr-only"> for {{ run.owner }}/{{ run.name }}</span></a>
+          </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
+  {% elif filtered %}
+    <p class="muted">
+      No runs match these filters.
+      {{ unfiltered_total }} run{{ '' if unfiltered_total == 1 else 's' }} stored in total &mdash;
+      <a href="/">show all</a>.
+    </p>
   {% else %}
     <p class="muted">No runs yet. Analyze a repository above.</p>
   {% endif %}

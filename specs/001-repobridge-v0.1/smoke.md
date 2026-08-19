@@ -54,6 +54,7 @@ tree entry has gone unaccounted for in any run, at any scale tried.
 | Run 8 | 2026-08-18 | Four summaries chosen to exercise partial coverage; the read cap hit live for the first time; one overgeneralisation found |
 | Run 9 | 2026-08-18 | The Run 8 capped case repeated with rank-ordered file selection; the overgeneralisation is gone |
 | Run 10 | 2026-08-19 | Milestone 7 diagnostics: four induced failure cases read off the diagnostics page; zero Gemini requests |
+| Run 11 | 2026-08-19 | Milestone 9 UI walkthrough: every page against the Run 10 runs, 134 links followed, one false failure notice found and fixed; zero API calls |
 
 ---
 
@@ -1060,3 +1061,192 @@ Stated plainly, because these are the gaps in the live evidence and the verdict 
 - **One completed and one capped repository**, not the full sample list. The other four repos
   were not re-run: their classification figures are unchanged by this milestone, and the
   calls would have bought no new diagnostics evidence.
+
+---
+
+### Run 11 — 2026-08-19: UI walkthrough (Milestone 9)
+
+- **Date:** 2026-08-19.
+- **Purpose:** `plan.md` Milestone 9 validation — "manual walkthrough on local machine;
+  check main journey from URL input to summary/diagnostics; confirm no broken navigation."
+- **Method:** every page rendered against the **four runs Run 10 already stored**, read as
+  a person sees them (tags stripped, entities decoded). Then every internal link on every
+  page followed and its status recorded.
+- **API cost: zero of both.** No GitHub call — this walks stored runs. No Gemini call —
+  the key was removed before import and `_call_gemini` replaced with a raiser, as in
+  Run 10. This is a rendering pass; nothing in it needs the network.
+
+#### The runs walked
+
+| Run | Repo | Status | Shape exercised |
+|---|---|---|---|
+| `6e744e00` | `psf/requests` | completed | **partial**: 20 of 107 read, 23 skipped, no summary |
+| `2616cdd1` | `Pushkar0997/quantum-toybox` | completed | clean: 30 of 30 read, nothing skipped |
+| `3de14840` | `octocat/Hello-World` | failed | **ref not found**, metadata retrieved |
+| `84b4b2e7` | `…/definitely-not-a-real-repo-zzz` | failed | **repo not found**, no metadata |
+
+Not covered live: **degraded** (needs a tree call to fail against a real repository) and
+**truncated** (needs a repository GitHub actually truncates; the largest tried live is
+37,393 entries and it did not). Both are covered by `tests/test_ui.py`, which crosses all
+five run shapes against all three run pages.
+
+#### Home — unfiltered
+
+```
+Analyze a GitHub repository
+  Repository URL  [Public repositories only.]
+  Branch or ref (optional)
+  [Analyze]
+Recent runs
+  Status [any|completed|degraded|failed]  Owner [ ]  From [ ]  To [ ]  [Filter]
+  Showing 4 of 4 stored runs.
+  Repository            | State                       | Entries | Selected | Read | When | Views
+  psf/requests          | completed capped no summary |     153 |      107 |   20 | …    | files diagnostics
+  quantum-toybox        | completed no summary        |      40 |       30 |   30 | …    | files diagnostics
+  octocat/Hello-World   | failed                      |       0 |        0 |    0 | …    | files diagnostics
+  …-not-a-real-repo-zzz | failed                      |       0 |        0 |    0 | …    | files diagnostics
+```
+
+**The State column is the change.** Before, every completed run rendered one identical
+green badge. `psf/requests` read 20 of 107 files and `quantum-toybox` read 30 of 30, and
+in the list they were indistinguishable. `capped` now says so on the row, in a word, and
+the new **Read** column gives the number beside it.
+
+**The Views column is the other change.** Each row reaches that run's file listing and
+diagnostics directly. Previously the only link was the repository name, so reaching a
+run's timeline meant opening the detail page and clicking again.
+
+#### Home — filtered
+
+| Query | What the page says |
+|---|---|
+| `?status=failed` | `Showing 2 of 2 matching runs (of 4 stored).` — plus a `clear ×` chip |
+| `?owner=nobody` | `Showing 0 matching runs (of 4 stored).` then *"No runs match these filters. 4 runs stored in total — show all."* |
+| `?since=last tuesday` | `Ignored an unreadable date: from. Use YYYY-MM-DD.` then the full unfiltered list |
+
+**The honesty rule holds in the two places it could have broken.** A filtered list names
+the whole beside the match, and an empty filtered list says *"No runs match these
+filters"* — never *"No runs yet"*, which is the empty-database message and would have been
+a lie. The malformed date is the one place the UI deliberately disagrees with the API:
+`GET /api/runs?since=last+tuesday` returns a 400, the page returns the list plus a note.
+Same input, two right answers, because a script needs to be told it was wrong and a person
+needs to keep browsing.
+
+#### Run detail — `psf/requests` (the partial run)
+
+```
+<- All runs · Run detail · File listing · Diagnostics
+psf/requests  [completed] [CAPPED] [NO SUMMARY]
+https://github.com/psf/requests · run 6e744e00… · 2026-08-19 04:15 UTC
+
+Summary
+  Summaries are not configured. No summarisation API key configured. …
+  [Generate summary from stored content]
+  Re-runs summarisation over the 20 chunks already stored for this run. Nothing is
+  fetched from GitHub and no file is read again…
+
+Repository
+  Requested ref (default branch) · Resolved ref main · Language Python · Stars 54242
+
+Classification
+  Every entry GitHub returned is accounted for:
+  23 directories + 107 selected + 23 skipped + 0 failed = 153 entries.
+  [107 selected] [23 skipped] [23 directories] [0 failed]     ← each a link into the listing
+
+Extracted content
+  20 of 107 selected files were read, producing 20 chunks.
+  87 selected files were not read: this run reads at most 20.
+  Showing 20 of 20 chunks, ordered by source path.
+```
+
+Every honesty element is intact and unaltered — the accounting identity as a visible sum,
+the read-cap sentence with both numbers, the chunk sample naming itself a sample.
+
+#### File listing — filtered to skipped
+
+```
+<- All runs · Run detail · File listing · Diagnostics        psf/requests
+Files  [completed] [CAPPED] [NO SUMMARY]
+Showing 1-23 of 23 matching entries (of 153 in this run).
+Status: all | directory | selected | skipped | failed
+Skip reason: any | non_text_asset (7) | unsupported_extension (16)
+```
+
+The scope line names both numbers, exactly as before. What changed is the strip above it:
+this page previously linked **only** back to the run detail page, so from a 37,393-entry
+listing there was no route to that run's diagnostics without editing the URL.
+
+#### Diagnostics — the partial run
+
+```
+This run completed with failures. At least one stage did not complete; the run continued
+without it, so parts of the analysis are missing. It is also partial. At least one stage
+that did complete was bounded — a limit, a budget, or a truncated listing — so content is
+missing beyond what the failure above accounts for. Each shortfall is quantified below.
+
+[7 info] [2 partial] [1 degraded] [0 error]
+Stages: validation 1 · metadata 1 · tree 1 · classification 2 · content 2 · extraction 1
+        · summarization 1 · persistence 1
+Timeline: 10 events, in the order the pipeline produced them.
+```
+
+The Milestone 7 combined banner, verified live for the second time. The sentence rendered
+by the renamed template variable (`total_events` → `total`, to match the API's pagination
+envelope) is identical character for character: *"10 events, in the order the pipeline
+produced them."*
+
+#### Failed runs — and a defect this walkthrough found
+
+Two failed runs, and until this pass **both were told the same untrue thing.**
+
+The bad-ref run rendered:
+
+> **This run failed.** The repository never resolved, so nothing was retrieved or
+> classified.
+
+and then, four rows below on the same screen, `Default branch: master`. The repository had
+resolved; the *ref* had not. Milestone 7 introduced this when it made a bad ref store a
+failed run *carrying the metadata that did succeed* — a genuine improvement that left this
+notice describing only the older of the two failure modes. No test caught it, because both
+kinds of failure produce `status == 'failed'` and every test asserted on the status.
+
+**Fixed, with the wording change recorded because it changes what a notice says:**
+
+| | |
+|---|---|
+| **Before** (both kinds) | This run failed. The repository never resolved, so nothing was retrieved or classified. |
+| **After** — metadata never returned | *unchanged* |
+| **After** — metadata returned, ref did not | This run failed. The repository resolved, but the ref that was requested did not exist — so no file tree was retrieved and nothing was classified. |
+
+`default_branch` is the discriminator: it is set only when the metadata call returned.
+Pinned by `test_a_failed_run_says_which_kind_of_failure_it_was`, which asserts both
+branches and that the page no longer contradicts the table below it.
+
+The file listing for a failed run renders cleanly: `Showing 0 of 0 entries in this run.`
+and *"This run stored no entries — see the run page for what went wrong."*
+
+#### Navigation
+
+Every internal link on every page, followed:
+
+```
+pages walked: 13   links followed: 134   broken: 0
+```
+
+Thirteen pages: home plus three views for each of the four stored runs. `evals.md`'s
+"broken navigation" failure signal is checked by following, not by inspection.
+
+#### What this walkthrough does not cover
+
+- **No live long analysis.** The elapsed-time progress state — a ticking counter plus
+  messages at 0 s, 8 s, 25 s and 60 s — is what a person sees during an analysis, and
+  walking stored runs never triggers it. Its markup is asserted by tests; its *behaviour
+  over time* has not been watched live. `smoke.md` Run 10 measured `psf/requests` at ~8 s
+  and `github/docs` at minutes, which is where the thresholds come from.
+- **No screen reader.** The accessibility work is asserted structurally — an empty
+  `role="alert"` region, `aria-current` on the active view, labels on every control,
+  `aria-hidden` on the clock. Nothing here was verified with an actual assistive
+  technology.
+- **No browser.** Everything is rendered HTML read as text. Focus rings, the responsive
+  breakpoint at 700 px and colour contrast are unverified by eye.
+- **Degraded and truncated runs** were not walked live, for the reasons above.

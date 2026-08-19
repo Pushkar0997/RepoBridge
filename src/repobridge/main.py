@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 
 import json
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from urllib.parse import urlencode
 
@@ -21,7 +22,7 @@ from repobridge.core.diagnostics import Level, Stage
 from repobridge.core.selection import SkipReason
 from repobridge.infra import storage
 from repobridge.infra.db import get_database, get_session
-from repobridge.infra.schemas import StoredEntryStatus
+from repobridge.infra.schemas import RunStatus, StoredEntryStatus
 from sqlalchemy.ext.asyncio import AsyncSession
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -90,14 +91,80 @@ def tree_url(run_id: str, *, status=None, reason=None, path=None, offset: int = 
     return f"/runs/{run_id}/tree" + (f"?{query}" if query else "")
 
 
+#: How many runs the home page lists. Small on purpose: it is a recent-runs list, not a
+#: browser, and the scope line always says how many of how many are shown.
+RUNS_PAGE_SIZE = 20
+
+
+def _ui_date(value: str | None):
+    """
+    Parse a filter date for a *page*, returning None rather than raising.
+
+    The API answers a malformed date with a 400 (`routes_runs._parse_when`). A page must
+    not: the tree page has ignored unknown filter values since Milestone 4 rather than
+    500ing a screen, and a person who typed a bad date wants the list plus a note, not an
+    error document. Same input, two right answers, because the consumers differ -- a
+    script needs to be told it was wrong, a person needs to keep browsing.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request, session: AsyncSession = Depends(get_session)):
-    """Root UI route: the analyze form plus recent runs."""
-    runs, total, _ = await storage.list_runs(session, limit=10)
+async def index(
+    request: Request,
+    status: str | None = Query(None),
+    owner: str | None = Query(None),
+    since: str | None = Query(None),
+    until: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Root UI route: the analyze form plus recent runs, filterable.
+
+    The filters are the ones `GET /api/runs` gained in Milestone 8, which nothing in the
+    UI used. `total` and `unfiltered_total` both reach the template, and the template
+    always renders both, so a filtered list can never read as the whole -- the rule the
+    file listing has followed since Milestone 4.
+    """
+    status = status if status in {s.value for s in RunStatus} else None
+    owner = (owner or "").strip() or None
+
+    # a date we could not read is reported and ignored, never fatal to the page
+    bad_dates = [
+        label for label, raw in (("from", since), ("to", until))
+        if raw and _ui_date(raw) is None
+    ]
+
+    runs, total, unfiltered = await storage.list_runs(
+        session,
+        status=status,
+        owner=owner,
+        since=_ui_date(since),
+        until=_ui_date(until),
+        limit=RUNS_PAGE_SIZE,
+    )
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={"title": "RepoBridge v0.1", "runs": runs, "total_runs": total},
+        context={
+            "title": "RepoBridge v0.1",
+            "runs": runs,
+            "total": total,
+            "unfiltered_total": unfiltered,
+            "status": status,
+            "owner": owner,
+            "since": since if not (since and _ui_date(since) is None) else "",
+            "until": until if not (until and _ui_date(until) is None) else "",
+            "filtered": bool(status or owner or _ui_date(since) or _ui_date(until)),
+            "bad_dates": bad_dates,
+            "statuses": [s.value for s in RunStatus],
+        },
     )
 
 
@@ -235,7 +302,9 @@ async def run_diagnostics_page(
             "title": f"Diagnostics - {run.owner}/{run.name}",
             "run": run,
             "events": events,
-            "total_events": len(all_events),
+            # named `total` to match the API's pagination envelope; the sentence the
+            # template renders with it is unchanged
+            "total": len(all_events),
             "stages": stage_rollup(all_events),
             "levels": [lv.value for lv in Level],
             "counts_by_level": {lv.value: counts.get(lv.value, 0) for lv in Level},

@@ -1293,6 +1293,164 @@ mechanisms rather than promises.
 
 ---
 
+### Recorded verdict — 2026-08-19
+
+Judged against the code as it stands. A criterion is PASS only where a test or a recorded
+live result backs it. Test suite at time of judging: **611 passing, 0 skipped**, of which
+**76** are the new `tests/test_ui.py`. The live result is `smoke.md` Run 11 — every page
+walked against the four runs Run 10 stored, 134 internal links followed, **zero API calls
+of either kind**.
+
+#### The spec's UI list contradicts the spec
+
+`spec.md` section 10 asks for an "input form for repo URL (and optional branch/token)".
+**There is no token field, deliberately** — `spec.md` section 5 and the Milestone 2
+decision it records rule one out: v0.1 is local-first and single-user, so a per-request
+secret would buy nothing while flowing into persistence, diagnostics and logs. Section 10
+was written before that decision and never updated, so the document contradicts itself.
+
+Recorded, not reconciled, for the same reason as the Milestone 8 divergence: amending a
+spec to describe what was built is how a spec stops being a spec. The form has two fields —
+repository URL and optional branch or ref — and that is correct behaviour, not a missing
+deliverable.
+
+Section 10 also asks for a "tree and file list view" as one item, which is one page
+(`/runs/{id}/tree`). No divergence; noting it so the count of five bullets against four
+pages is not read as a gap.
+
+#### Criteria
+
+| Criterion | Source | Verdict | Evidence |
+|---|---|---|---|
+| Input form | plan D1 | PASS | `/` renders it; every control has a `<label for=…>` (`test_every_form_control_has_a_label`); walked in Run 11 |
+| Recent runs list | plan D2 | PASS | Now with status/owner/date filters, a Read column and per-row links to all three views. `test_recent_runs_link_to_more_than_the_detail_page` |
+| Run detail page | plan D3 | PASS | Walked in Run 11 for a partial, a clean and both kinds of failed run |
+| Tree page | plan D4 | PASS | Walked filtered and unfiltered; `test_every_page_renders_for_every_run_shape` covers all five shapes |
+| Diagnostics page | plan D5 | PASS | Walked; the combined banner verified live for the second time |
+| A user can complete the flow without touching the API | plan E1 | PASS | Run 11: home → run → file listing → diagnostics, and back, entirely by links. 134 links followed, 0 broken |
+| Empty, loading, and error states are readable | plan E2 | PASS | **Empty**: no runs (`test_the_home_page_renders_with_no_runs_at_all`), empty filter result, empty file listing — all walked. **Error**: both failure kinds, walked. **Loading**: elapsed counter plus staged messages, asserted structurally; see the caveat below |
+| UI remains lightweight and responsive | plan E3 | PASS | Still Jinja2, hand-written CSS and one JS file. No framework, no build step, no dependency added in nine milestones. A `@media (max-width: 700px)` block was added; **not verified in a browser** |
+| Manual walkthrough on local machine | plan V1 | PASS | `smoke.md` Run 11 |
+| Check main journey from URL input to summary/diagnostics | plan V2 | PASS | Run 11 walks it end to end and quotes each page |
+| Confirm no broken navigation | plan V3 | PASS | 134 links followed across 13 pages, every one 200 |
+| A user can complete the whole flow from the browser | evals | PASS | as E1 |
+| The UI makes the current run status obvious | evals | PASS | Status stated in words on every page (`test_the_run_status_is_stated_in_words_not_only_in_colour`), plus state flags for what status alone cannot say |
+| The summary, tree, files, and diagnostics are easy to find | evals | PASS | One navigation strip on all three run pages, reaching all four destinations; the runs list reaches all three views per row |
+| Empty, loading, and error states are clear | evals | PASS | as E2 |
+| A first-time user can use the app without reading code | evals success | PASS | Run 11 reads each page as prose; every number on screen is labelled and every filter is a visible control |
+| Navigation is simple and consistent | evals success | PASS | One partial, `_run_nav.html`, included by all three run pages — the inconsistency it replaces is recorded below |
+| The UI feels like a tool, not a prototype shell | evals success | PASS, and this is the softest row | Backed by what changed rather than by taste: a state column that distinguishes runs, filters wired to real query parameters, one navigation strip, focus states, and a failure notice that no longer contradicts the table beneath it. Not backed by any browser or user session |
+
+#### The four named failure signals
+
+**"Hidden controls" — eliminated.** The Milestone 8 filters existed only as query
+parameters; nothing in the UI exposed them. They are now a visible form on the home page,
+and the tree page's filters were already chips.
+
+**"Broken navigation" — eliminated, by following rather than by inspection.** Run 11 walks
+134 links; `test_every_navigation_link_on_every_page_resolves` re-walks them for all five
+run shapes on every suite run.
+
+**"States that are visually indistinguishable" — this is where most of the work went.**
+Three cases were genuinely indistinguishable before:
+
+| Case | Before | Now |
+|---|---|---|
+| A run that read 20 of 107 files vs. one that read 30 of 30 | identical green `completed` badge | `CAPPED` flag plus a Read column |
+| A run whose listing GitHub truncated | visible only on the run's own page | `TRUNCATED` flag wherever the run appears |
+| An analysis working vs. stuck | one static sentence for the entire wait | elapsed counter, and messages at 0 s, 8 s, 25 s, 60 s |
+
+**"Confusing or cluttered layouts" — one instance found and fixed.** The navigation strip
+printed the repository name on the detail page, whose `<h2>` is the repository name and
+whose document title is too. Suppressed there, kept on the sibling pages whose headings are
+"Files" and "Diagnostics".
+
+#### What the walkthrough found that the tests did not
+
+**A failed run was told something untrue.** The bad-ref case rendered *"The repository
+never resolved, so nothing was retrieved or classified"* and then printed
+`Default branch: master` four rows below — the repository had resolved; the ref had not.
+Milestone 7 introduced this when it made a bad ref store a failed run *carrying the
+metadata that did succeed*, a genuine improvement that left the notice describing only the
+older failure mode. Every test asserted on `status`, and both kinds are `failed`, so
+nothing caught it.
+
+This is the second milestone running where the live pass found what the suite could not,
+and both were the same shape: **a case that is two things at once, tested one at a time**
+(Milestone 7's banner was partial *and* degraded; this run is failed *and* resolved). Worth
+watching for in the remaining milestone.
+
+The wording change is quoted before and after in Run 11 and pinned by
+`test_a_failed_run_says_which_kind_of_failure_it_was`.
+
+#### The honesty elements were not redesigned
+
+Each of these exists because a specific failure was found live. All are asserted present
+**by their words**, the way `test_api_contract.py` pinned the API's honesty fields:
+
+| Element | Recorded in | State |
+|---|---|---|
+| Tree scope line — "Showing 1–23 of 23 matching entries (of 153 in this run)" | Run 5 | unchanged |
+| Tree truncation warning | Run 5 | unchanged |
+| Accounting identity, shown as a visible sum | Run 4 | unchanged |
+| Summary provenance block and "Claims in the prose should be checkable…" | Runs 7–8 | unchanged |
+| Partial-coverage notice | Run 8 | unchanged |
+| Extraction scope line and the read-cap sentence | Runs 8–9 | unchanged |
+| Diagnostics verdict banner, all four branches | Run 10 | unchanged |
+| Chunk sample naming itself a sample | Run 6 | unchanged |
+
+**Two changes touched this territory and both are recorded.** The failure notice above is
+one — a correction of a false statement, quoted before and after. The other is a *variable*
+rename in `diagnostics.html`: `total_events` → `total`, to match the API's pagination
+envelope. The rendered sentence is identical character for character, and
+`test_the_diagnostics_event_count_line_survives_the_variable_rename` asserts the sentence
+rather than the variable.
+
+#### Accessibility
+
+The Milestone 4 debt is closed and the pass went wider than it:
+
+| Item | State |
+|---|---|
+| Home page shipping pre-written error prose on every render | **Closed.** The container ships empty with `role="alert"`; the script fills it. Two tests: the prose is absent from the served HTML, and the region is live and focusable — so a failure is now *announced*, which it never was even while hidden |
+| Labels on form controls | Every control labelled, asserted by parsing the served HTML rather than by inspection |
+| Focus states | One `:focus-visible` treatment covering links, buttons, inputs, selects, chips, count cards and the pager. Previously the app relied on browser defaults, easiest to lose on the links styled `text-decoration: none` |
+| Colour as the only carrier of meaning | Status badges always carried their word. The two places colour stood alone are fixed: the active nav item now carries `aria-current="page"`, and the new state flags carry words (`CAPPED`, `TRUNCATED`) rather than a coloured dot |
+| Progress announcements | The staged messages are a polite live region; the per-second clock is `aria-hidden`, because a clock read aloud every second is noise |
+| Landmarks | Skip link, `<main id="main">`, `<nav aria-label>`, `<caption class="sr-only">` on the runs table, and per-row link labels disambiguated for a screen reader reading a column of identical "files" links |
+
+**Not verified with an assistive technology.** Every claim above is structural — the right
+attributes are in the served HTML, asserted by tests. Whether a screen reader announces
+them usefully has not been observed, and no browser was opened.
+
+#### Milestone 9 is closed
+
+Every deliverable exists, every expected behaviour is asserted across all five run shapes
+rather than the one each page was built against, all four named failure signals are
+eliminated, and the walkthrough is recorded with the pages quoted.
+
+**Caveats carried forward, recorded as notes rather than blockers:**
+
+- **The loading state has not been watched live.** Its markup and its staged messages are
+  asserted by tests, and the thresholds come from Run 10's measured timings (~8 s for
+  `psf/requests`, minutes for `github/docs`), but nobody has sat through a long analysis
+  and watched the counter tick. This is the one Milestone 9 behaviour that only exists in
+  time, and the walkthrough — which reads stored runs — structurally cannot exercise it.
+- **No browser and no screen reader.** Focus rings, the 700 px breakpoint, and colour
+  contrast are unverified by eye; the accessibility work is verified as markup only.
+- **Degraded and truncated runs were not walked live.** A degraded run needs a real tree
+  call to fail; a truncated one needs a repository GitHub actually truncates, and the
+  largest tried live (37,393 entries) was not truncated. Both are covered by tests across
+  all three pages.
+- **There is no UI for chunks beyond the 20-row sample** on the run detail page.
+  `GET /api/runs/{id}/chunks` is paginated and filterable; nothing in the UI reaches it.
+  Not a Milestone 9 deliverable — `plan.md` lists five pages and this would be a sixth —
+  but a person who wants chunk 300 of 400 must use the API.
+- **`spec.md` section 10 still asks for a token field** that section 5 of the same document
+  rules out. Left as written.
+
+---
+
 ## Milestone 10 – Hardening evals
 
 ### What to verify
