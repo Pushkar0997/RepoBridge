@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 import logging
+from importlib.metadata import version
 from pathlib import Path
 
 import json
@@ -24,15 +25,20 @@ from repobridge.infra import storage
 from repobridge.config import (
     DEFAULT_GITHUB_CONFIG,
     DEFAULT_SUMMARIZATION_CONFIG,
+    get_extraction_config,
     get_gemini_api_key,
     get_github_token,
     get_summarization_config,
 )
-from repobridge.infra.db import get_database, get_session
+from repobridge.infra.db import SchemaVersionError, get_database, get_session, sqlite_path
 from repobridge.infra.schemas import RunStatus, StoredEntryStatus
 from sqlalchemy.ext.asyncio import AsyncSession
 
 BASE_DIR = Path(__file__).resolve().parent
+
+#: One version string. `/health`, the OpenAPI metadata and the startup log line all read
+#: it, so they cannot disagree -- they were three separate literals before.
+APP_VERSION = version("repobridge")
 
 # Basic logging setup
 logging.basicConfig(
@@ -43,14 +49,47 @@ logger = logging.getLogger("repobridge")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Create the SQLite schema on startup so a fresh clone just works."""
-    await get_database().create_all()
-    logger.info("Database schema ready")
+    """
+    Create the SQLite schema on startup so a fresh clone just works, and say once what
+    this process is configured with.
+
+    **The startup block is what the logs are for.** Diagnostics already explain every
+    run, per run, in the UI -- so the log's job is the part diagnostics structurally
+    cannot cover: facts about the *process*, which exist before any run does and belong
+    to none of them. Which database, which caps, whether each key is present. It is the
+    difference between "it isn't summarising" and a support answer.
+
+    Booleans only for the keys, exactly as the UI does. A log file is the last place a
+    secret should end up.
+    """
+    database = get_database()
+    try:
+        await database.create_all()
+    except SchemaVersionError as exc:
+        # Without this the message is the last line of a forty-line traceback, which is
+        # the first thing a new user sees when their database is one release behind.
+        logger.error(
+            "RepoBridge cannot start.\n\n%s\n", exc, exc_info=False
+        )
+        raise
+
+    extraction = get_extraction_config()
+    logger.info(
+        "RepoBridge %s ready | database=%s | github_token=%s | gemini_key=%s | "
+        "model=%s | read_cap=%s files | concurrency=%s",
+        APP_VERSION,
+        sqlite_path(database.url) or database.url,
+        "set" if get_github_token() else "NOT SET (60 requests/hour, unauthenticated)",
+        "set" if get_gemini_api_key() else "NOT SET (runs complete; no summaries)",
+        get_summarization_config().model,
+        extraction.max_files_per_run,
+        extraction.max_concurrent_reads,
+    )
     yield
 
 
 # FastAPI app
-app = FastAPI(title="RepoBridge v0.1", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="RepoBridge v0.1", version=APP_VERSION, lifespan=lifespan)
 
 # Templates and static
 templates = Jinja2Templates(directory=str(BASE_DIR / "ui" / "templates"))
@@ -65,7 +104,7 @@ async def health() -> dict:
     """
     Simple health endpoint to verify the app is running.
     """
-    return {"status": "ok", "service": "repobridge", "version": "0.1.0"}
+    return {"status": "ok", "service": "repobridge", "version": APP_VERSION}
 
 
 # How many entries one page of the tree view shows. The tree view is paginated

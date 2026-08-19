@@ -1467,6 +1467,196 @@ eliminated, and the walkthrough is recorded with the pages quoted.
 
 ---
 
+### Recorded verdict — 2026-08-19
+
+Judged against the code as it stands. A criterion is PASS only where a test or a recorded
+live result backs it. Test suite at time of judging: **646 passing, 0 skipped** — 636 in
+the developer checkout plus the ten new end-to-end tests; **620 of them also run green in a
+clean virtualenv built from scratch**, which is the number that matters for this milestone.
+The live result is `smoke.md` Run 12.
+
+#### The Milestone 10 criteria hold up, with one item an agent must not do
+
+Unlike `spec.md` §9 (Milestone 8) and §10 (Milestone 9), nothing in the Milestone 10
+criteria contradicts what was built. One task is not an agent's to perform:
+
+> `tasks.md`: "Tag v0.1 in Git, or at least create a clear commit marking 'RepoBridge v0.1
+> baseline'."
+
+This session operates under an explicit no-commit constraint, and tagging a release is the
+owner's act regardless. **Recorded as the one Milestone 10 deliverable left outstanding**,
+and it is deliberately not marked PASS below.
+
+#### Criteria
+
+| Criterion | Source | Verdict | Evidence |
+|---|---|---|---|
+| README finalized | plan D1 | PASS | Rewritten at Milestone 8, extended here with "API stability" and "Upgrading". Four tests make it executable: an undocumented endpoint fails the build, a documented-but-missing one fails, an undocumented environment variable fails, and the Python floor must match `pyproject.toml` |
+| Basic tests passing | plan D2 | PASS | 646 in the checkout; **620 in a clean virtualenv**, which is the stronger claim — Run 12 |
+| Clean logs | plan D3 | PASS | See the log decision below. Startup states configuration once; every diagnostic event is logged from one call site at a severity derived from its level; nothing else logs |
+| Reliable setup steps | plan D4 | PASS | Run 12 executed README flow 1 verbatim from an empty directory: four steps, all worked first time. Flow 3 (`uv sync`) is labelled aspirational and was not run |
+| Smoke test suite | plan D5 | PASS | `smoke.md`, twelve recorded runs across seven repositories and four induced-failure classes |
+| Fresh clone can be set up quickly | plan E1 | PASS | Run 12: venv to serving in four commands; server up 2 s after boot |
+| Common failure cases are handled | plan E2 | PASS | Bad URL, wrong host, missing repo, missing ref, rate limit, tree failure, unreadable file, malformed notebook, absent provider key, stale database — each with a named code and a message that says what to do |
+| Project feels coherent and maintainable | plan E3 | PASS, and the softest row | Backed by structure rather than taste: `core`/`infra`/`api`/`ui` separation held for ten milestones with no framework and no build step; one error envelope; one pagination envelope; one navigation partial; one version constant. Not backed by any second developer's opinion |
+| Fresh install test | plan V1 | PASS | Run 12 |
+| Full test suite | plan V2 | PASS | 646 / 620 |
+| Smoke suite across multiple repos | plan V3 | PASS | Seven repositories, 1 to 37,393 entries |
+| Manual review of logs and UI | plan V4 | PASS | Logs reviewed below; the UI was walked page by page in Run 11 and re-rendered after the Milestone 10 visual pass |
+| Fresh clone setup works | evals | PASS | Run 12 |
+| Basic test suite passes | evals | PASS | in both environments |
+| Smoke tests work on multiple sample repos | evals | PASS | Runs 1–12 |
+| Logs are readable and not noisy | evals | PASS | Run 12 quotes a complete clean-machine boot and a complete analysis: 12 lines for a full run, one per stage, no repetition, no stack traces |
+| The app can be restarted and still function normally | evals | PASS | Run 12 restarted the process against the same file and read the run back; `test_everything_is_readable_again_after_the_app_restarts` asserts the same across every surface |
+| Setup instructions match reality | evals success | PASS | Executed, not reviewed — Run 12 |
+| Project is stable enough for continued development | evals success | PASS | Ten closed milestones, 646 tests, every honesty element pinned by wording |
+| v0.1 can be shown confidently as a working baseline | evals success | PASS, with the caveats listed at the end | A first-time user with neither key gets a completed, fully accounted run and a page explaining what it could not do |
+| Tag v0.1 in Git | tasks | **NOT DONE** | The owner's action; this session cannot commit or tag |
+
+#### What Run 12 found, by doing it
+
+Four real defects, none of which any test or reading had caught:
+
+1. **A stale database dumped a forty-line traceback** whose last line was the only useful
+   one — and it named a connection URL rather than a file path. This is the *first* error
+   a user meets after their first upgrade. Now logged as a framed block before the
+   traceback, naming the resolved absolute path.
+2. **A rate-limit error never mentioned that a token exists.** The unauthenticated user on
+   60 requests an hour is precisely the person who hits it and precisely the person who
+   does not know the fix. Now names the variable and the 5,000/hour ceiling — and only
+   when there is no token, because telling an authenticated user to authenticate is noise.
+3. **`tests/test_end_to_end.py` was empty.** Zero tests, named in `tasks.md` under
+   Milestone 6 *and* Milestone 10: a filename that read as coverage for five milestones.
+   Now ten tests, and deliberately not more per-stage assertions — they cross-check the
+   surfaces against *each other*, which is the failure mode a stage-shaped test cannot
+   see. One of them found that `provenance.limitations` correctly reports skipped entries
+   on a run whose `is_partial` is false; the assertion was wrong, not the code.
+4. **`PRAGMA foreign_keys` was never set**, so every `ondelete="CASCADE"` was decoration.
+   Nothing deletes a run today, which is why it went unnoticed and exactly why it should
+   be right before something does.
+
+#### Decision — no database migrations, and no Alembic
+
+**Deferred four times; decided now.** v0.1 ships with no migrations. A schema change means
+deleting `repobridge.db`. Recorded in the README under "Upgrading", pinned by
+`test_the_readme_records_the_no_migrations_decision`.
+
+**The argument.** Migrations exist to preserve data that cannot be reconstructed. Every row
+RepoBridge stores derives from a public GitHub repository and can be regenerated by
+re-running the analysis; the true cost of a reset is GitHub requests, plus provider quota
+if summaries are re-made. Against that, Alembic is a dependency, a migration directory and
+a per-change authoring step, for a schema that moved in six of ten milestones, in a project
+whose stated scope is a small local tool.
+
+**What was hardened instead** — because the decision is only defensible if the failure is
+good: the refusal names the exact file, explains the policy, points at the README section
+that argues it, and states the cost. It is a two-line instruction rather than a puzzle.
+
+**The cost, recorded rather than buried:** upgrading loses stored runs; re-making summaries
+spends provider quota; and there is no warning *before* upgrading, only a refusal after.
+**Revisit when** someone other than the author is running against repositories they cannot
+cheaply re-analyse, or when a schema change is additive enough that a migration is three
+lines.
+
+#### Decision — the API stays unversioned, and says so
+
+**No `/v1/` prefix. The README states plainly that the v0.1 API is unstable.** Pinned by
+`test_the_readme_records_the_api_stability_decision` and by
+`test_no_endpoint_has_acquired_a_version_prefix`, which fails if a prefix appears without
+the README changing with it.
+
+**The argument.** A version prefix is a promise, and v0.1 cannot keep one: the schema has
+moved four times, and Milestone 8 changed every error body from `{"detail": …}` to
+`{"error": …}`. Shipping `/api/v1/` and then breaking it is worse than shipping no prefix,
+because the prefix is a claim a consumer is entitled to rely on. Unprefixed paths make the
+situation legible — there is no version to pin because nothing is frozen.
+
+**What consumers get instead:** pin a commit. Contracts are enforced in-repo by
+`test_api_contract.py`, which is a real guarantee inside this repository and none at all
+outside it. **A prefix arrives with the first external consumer**, together with a
+commitment not to break it.
+
+#### Decision — logs, and the Milestone 7 design item resolved
+
+The logging-hooks item deferred from Milestone 7 and parked here is **resolved as: do not
+add per-module logging hooks.**
+
+**What the logs are for, given diagnostics exist.** Diagnostics explain one *run*, per run,
+in the UI and the API, structured and queryable. The log's job is the part that
+structurally cannot: facts about the **process**, which exist before any run does and
+belong to none of them. That is now one line at startup — version, database path, whether
+each key is set, model, read cap, concurrency — which turns "it isn't summarising" into an
+answerable question. Booleans only for the keys; a scan of the log confirmed neither value
+appears.
+
+**Why not per-module hooks.** Adding logging inside `core/selection.py`,
+`core/extraction.py` and `core/github_client.py` means deciding what they say
+*independently* of the timeline, which creates a second narrative of the same run that will
+drift from the first. Drift between two accounts of the same events is precisely the
+failure diagnostics was built to prevent, and `kubernetes/kubernetes` at 37,393 entries is
+the scale at which "log every decision" becomes unusable. The property already established
+— a recorded event and its log line come from one call site and cannot disagree — is worth
+more than coverage of the gaps.
+
+**Measured noise:** a complete analysis of a one-file repository logs 12 lines, one per
+stage plus the HTTP requests. A clean boot logs 3. No stack traces on any handled path.
+
+#### License and visibility — options only, no change made
+
+**Nothing was changed, and nothing should be by an agent.** `LICENSE.md` remains All Rights
+Reserved and `README.md` still says "private and proprietary, not yet ready for public
+use". That posture was chosen five milestones ago when the product direction was unsettled;
+it is worth a deliberate decision now, by the owner.
+
+| Option | What it enables | What it costs |
+|---|---|---|
+| **Keep All Rights Reserved** | Every future option stays open, including commercial licensing | Nobody can legally use, fork or contribute. "Local-first tool for LLM workflows" is a category people adopt by cloning; this forbids exactly that. A public repository with this licence collects stars and no users |
+| **MIT / BSD-2** | Maximum adoption; the default expectation for a developer tool | Anyone may fold it into a commercial product without returning anything. Irrevocable for released versions |
+| **Apache-2.0** | Same adoption as MIT, plus an explicit patent grant and a NOTICE requirement — the safer choice for anything a company might adopt | Slightly longer, marginally less familiar to individuals |
+| **AGPL-3.0** | Prevents a hosted closed fork; strong for a tool that could plausibly become a service | Many companies forbid AGPL dependencies outright, which removes a large part of the audience |
+| **Dual: AGPL + commercial** | Open adoption plus a revenue path | Requires a CLA from contributors and real administration; heavy for a solo v0.1 |
+
+**Consequences worth weighing beyond the licence text.** The README's own status line
+("private and proprietary, not yet ready for public use") does more to deter use than the
+licence does, and the two should agree. `AGENTS.md` scopes v0.1 as a local single-user tool
+with no auth, no accounts and no multi-user story — which is a fine thing to open-source
+and a poor thing to sell as-is. Note also that the dependency set (FastAPI, SQLAlchemy,
+Uvicorn, httpx, Jinja2) is permissively licensed and constrains nothing.
+
+**A recommendation, since one was asked for:** if the goal is that people actually use
+this, **Apache-2.0** is the fit — the adoption profile of MIT with a patent grant that
+makes it safe for a company to adopt, and it matches what a tool of this shape is expected
+to carry. But this is the owner's call and the licence file is unchanged.
+
+#### Milestone 10 is closed, with one deliverable outstanding
+
+Every plan deliverable exists and is verified by execution rather than by review. The three
+decisions deferred across earlier milestones — migrations, API versioning, logging hooks —
+are decided and recorded, each with its argument and its cost. The two questions this
+milestone exists to answer are answered by Run 12: the setup works from nothing, and a
+first-time user with neither key gets a working tool that explains its own limits.
+
+**Outstanding:** tagging v0.1. The owner's action.
+
+**Caveats carried forward, recorded as notes rather than blockers:**
+
+- **One OS, one Python version.** Windows 10, CPython 3.13.7. `pyproject.toml` declares a
+  floor of 3.10 that has never been exercised, and no Linux or macOS run exists.
+- **Not a true `git clone`.** Run 12 copied the working tree with a clone's exclusions,
+  because the code is uncommitted. `.gitattributes` line-ending normalisation is untested.
+- **No second person has run this.** Every "would a newcomer get stuck" judgement in Run 12
+  is the author's simulation of a newcomer, which is the weakest part of this milestone.
+- **The licence question is open by design**, and until it is answered the project cannot
+  be used by anyone else regardless of how good the setup instructions are. That is the
+  largest remaining obstacle to "works for someone who is not the person who built it",
+  and it is not a technical one.
+- **`uv sync` (README flow 3) is unverified** and would not install the `dev` extra, so
+  `pytest` would be absent. The flow is labelled conceptual.
+- **No CI.** Every test run in this project has been manual. The contract tests that keep
+  the README honest only fire when someone remembers to run them.
+
+---
+
 ## Recommended smoke test suite
 
 Maintain a small repo list for repeatable smoke testing:

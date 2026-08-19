@@ -11,7 +11,9 @@
     {{ state_flags(run) }}
   </h2>
   <p class="muted">
-    <a href="{{ run.repo_url }}" rel="noopener noreferrer">{{ run.repo_url }}</a>
+    {# `rel` without `target` was inert. The link leaves the app, so it opens in a new
+       tab and the rel now does its job. #}
+    <a href="{{ run.repo_url }}" target="_blank" rel="noopener noreferrer">{{ run.repo_url }}<span class="sr-only"> (opens in a new tab)</span></a>
     &middot; run {{ run.id }}
     {% if run.created_at %}&middot; {{ run.created_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}
   </p>

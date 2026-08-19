@@ -139,6 +139,17 @@ def _rate_limit_message(resp: httpx.Response, context: str) -> str:
         else:
             parts.append(f"The limit resets at {reset_at:%Y-%m-%d %H:%M:%S} UTC.")
 
+    # The actionable half. An unauthenticated caller is on 60 requests an hour and the
+    # fix is one environment variable, but the error never said so -- it named the limit
+    # and the reset time and left the reader to know that a token exists. Only added when
+    # there is no token: telling an authenticated user to authenticate is noise.
+    if is_primary and not get_github_token():
+        parts.append(
+            "This request was unauthenticated, which is a 60-requests-per-hour limit "
+            f"shared across your IP. Setting {DEFAULT_GITHUB_CONFIG.token_env_var} raises "
+            "it to 5,000 per hour."
+        )
+
     return " ".join(parts)
 
 

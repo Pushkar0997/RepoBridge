@@ -55,6 +55,7 @@ tree entry has gone unaccounted for in any run, at any scale tried.
 | Run 9 | 2026-08-18 | The Run 8 capped case repeated with rank-ordered file selection; the overgeneralisation is gone |
 | Run 10 | 2026-08-19 | Milestone 7 diagnostics: four induced failure cases read off the diagnostics page; zero Gemini requests |
 | Run 11 | 2026-08-19 | Milestone 9 UI walkthrough: every page against the Run 10 runs, 134 links followed, one false failure notice found and fixed; zero API calls |
+| Run 12 | 2026-08-19 | Milestone 10 release hardening: fresh virtualenv, README flow 1 executed verbatim, first run with neither key; four defects found and fixed |
 
 ---
 
@@ -1250,3 +1251,149 @@ Thirteen pages: home plus three views for each of the four stored runs. `evals.m
 - **No browser.** Everything is rendered HTML read as text. Focus rings, the responsive
   breakpoint at 700 px and colour contrast are unverified by eye.
 - **Degraded and truncated runs** were not walked live, for the reasons above.
+
+---
+
+### Run 12 — 2026-08-19: clean machine, nothing configured (Milestone 10)
+
+- **Date:** 2026-08-19.
+- **Purpose:** `plan.md` Milestone 10 validation — "fresh install test", and `evals.md`'s
+  "fresh clone setup works" / "the app can be restarted and still function normally".
+  The README's install flows had been edited several times and **never executed end to end
+  since Milestone 0**.
+- **Method:** the working tree copied to an empty directory with `.venv`, `.git`,
+  `__pycache__` and every `*.db` excluded — a fresh-clone equivalent. A new virtualenv from
+  the system Python 3.13.7. Then README Setup flow 1, verbatim, followed by a real analysis
+  **with no GitHub token and no Gemini key set**.
+- **API cost: 3 GitHub requests** (metadata, tree, one file), unauthenticated.
+  **Zero Gemini requests** — with no key the pipeline never reaches the provider, which is
+  itself one of the things this run verifies.
+
+#### The install, step by step
+
+| README step | Command | Result |
+|---|---|---|
+| 1 | `py -3 -m venv .venv` | ok |
+| 2 | `pip install -r requirements.txt` | ok — 33 packages, no conflicts |
+| 3 | `pip install -e .` | ok — `Successfully built repobridge` |
+| 4 | `uvicorn repobridge.main:app` | **up in 2 seconds** |
+| Tests | `python -m pytest` | **620 passed** in the clean environment |
+
+```
+INFO:     Started server process [18316]
+INFO:     Waiting for application startup.
+2026-08-19 19:21:13 INFO [repobridge.infra.db] Opening database at sqlite+aiosqlite:///./repobridge.db
+2026-08-19 19:21:13 INFO [repobridge] Database schema ready
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8099
+```
+
+The database is created on first boot with no setup step. `GET /health` returned
+`{"status":"ok","service":"repobridge","version":"0.1.0"}`.
+
+#### The first analysis, with nothing configured
+
+`POST /api/analyze` against `octocat/Hello-World`:
+
+```
+run_id        : 50d05f59-68ad-4219-8202-7ddb975acbc3
+resolved_ref  : master
+entries       : 1   truncated: False
+classification: 1 total, 1 selected, 0 skipped, accounts_for_every_entry: True
+extraction    : read 1 of 1 selected files, 1 chunk, accounts_for_every_selected_file: True
+summary.status: not_configured
+summary.error : No summarisation API key configured. Set REPOBRIDGE_GEMINI_API_KEY to
+                enable summaries. The run and its extracted content are stored regardless.
+```
+
+**A first-time user with neither key gets a working tool.** The run completes, every entry
+is accounted for, the file is read and chunked and stored, and the one thing that cannot
+happen is reported as a setting rather than a fault. HTTP 200, not an error.
+
+The home page states the same thing before they start:
+
+```
+Configuration
+  not set   REPOBRIDGE_GITHUB_TOKEN
+            Unauthenticated: 60 requests per hour, shared per IP. A single medium
+            repository can exhaust that, and the failure arrives as a rate-limit
+            error partway through a run.
+            Set it and restart: export REPOBRIDGE_GITHUB_TOKEN=your_token_here
+  not set   REPOBRIDGE_GEMINI_API_KEY
+            No summaries will be generated. Runs still complete: the tree is
+            classified, files are read and chunked, and everything is stored. Only
+            the summary section reports not_configured.
+            Set it and restart: export REPOBRIDGE_GEMINI_API_KEY=your_key_here
+  Read from the environment only, never from a form field or a request, and never
+  displayed here — this panel reports only whether each one is set.
+```
+
+Below it: `No runs yet. Analyze a repository above.`
+
+#### Restart
+
+The server was killed and started again as a second process against the same
+`repobridge.db`. Boot took 1 second and `GET /api/runs` returned
+`1 ['octocat/Hello-World completed']`. Running the full test suite in the same directory
+did **not** disturb it — the suite's `isolated_database` guard holds outside the developer's
+own checkout too.
+
+#### What a new user would get stuck on
+
+Every one of these was found by doing it, not by reading it.
+
+| # | Finding | Verdict |
+|---|---|---|
+| 1 | **A stale database dumped a 40-line traceback**, with the actionable sentence as the very last line — and that sentence named a *connection URL* (`sqlite+aiosqlite:///./repobridge.db`), not a file path. This is the first error a user hits after their first upgrade, guaranteed. | **Fixed.** The message is logged as a framed block *before* the traceback and names the resolved absolute path |
+| 2 | **A rate-limit error never mentioned that a token exists.** It named the limit and the reset time and left an unauthenticated first-time user — the person most likely to hit 60/hour — to already know the fix. | **Fixed.** The message now names `REPOBRIDGE_GITHUB_TOKEN` and the 5,000/hour ceiling, and only when there is no token |
+| 3 | **`tests/test_end_to_end.py` was empty.** Zero tests, named in `tasks.md` under Milestones 6 *and* 10. A filename that looked like coverage for five milestones. | **Fixed.** Ten tests that cross-check the surfaces against each other |
+| 4 | **`PRAGMA foreign_keys` was never set**, so every `ondelete="CASCADE"` was decoration; deleting a run would have orphaned its files, chunks and events. | **Fixed**, with a test that deletes a run and asserts the children go |
+| 5 | **`python` on this machine resolved to an unrelated project's virtualenv.** Not RepoBridge's fault, but the README says `python -m venv` and a reader whose PATH is similarly polluted gets a confusing failure. | **Recorded.** The README now states the Python floor; `py -3` / `python3` is the safer instruction and is not given |
+| 6 | The README's **flow 3 (`uv sync`)** is marked "conceptual, not required" and was not executed. `uv` would also not install the `dev` extra by default, so `pytest` would be missing. | **Recorded, not fixed** — the flow is explicitly labelled aspirational |
+| 7 | The README's **Project structure** block omits `requirements.txt`, `AGENTS.md`, `.gitignore` and `.gitattributes`. | **Recorded.** Cosmetic |
+| 8 | `pip` printed an upgrade notice twice. Harmless, but it is the first output a new user sees after step 2. | **Recorded.** Not ours |
+
+**Nothing blocked the install.** All four README steps worked exactly as written, first
+time, from an empty directory.
+
+#### Verified after the fixes
+
+The changed files were copied into the clean directory and the failure paths re-run there:
+
+```
+2026-08-19 19:34:07 ERROR [repobridge] RepoBridge cannot start.
+
+This database was created by schema version 3, but this build expects version 4.
+RepoBridge v0.1 has no migrations, by decision -- see 'Upgrading' in the README.
+
+    Delete this file and start RepoBridge again:
+        C:\...\clean\repobridge.db
+
+Stored runs will be lost. They can be re-created by re-analysing the same repositories;
+nothing else is kept in the database.
+```
+
+And the new startup line, which is what the logs are now for:
+
+```
+INFO [repobridge] RepoBridge 0.1.0 ready | database=C:\...\clean\repobridge.db
+ | github_token=NOT SET (60 requests/hour, unauthenticated)
+ | gemini_key=NOT SET (runs complete; no summaries)
+ | model=gemini-3.5-flash-lite | read_cap=200 files | concurrency=8
+```
+
+With both keys set the same line reads `github_token=set | gemini_key=set`, and a scan of
+the log confirmed **zero occurrences** of either value.
+
+#### What this run does not cover
+
+- **One operating system, one Python.** Windows 10, CPython 3.13.7. The floor is declared
+  as 3.10 and has never been tested.
+- **Not a real `git clone`.** The working tree was copied with the same exclusions a clone
+  would produce, because the current code is uncommitted. A true clone would additionally
+  test that `.gitignore` and `.gitattributes` behave — `.gitattributes` normalises line
+  endings and is untested here.
+- **`--reload` was not used**, though the README's step 4 includes it. The server was run
+  without it so the process could be controlled from a script.
+- **No second machine and no second person.** The strongest version of this test is someone
+  else running it, and that has not happened.

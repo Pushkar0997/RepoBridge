@@ -11,8 +11,9 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from repobridge.config import DEFAULT_DATABASE_CONFIG, DatabaseConfig, get_database_url
@@ -33,10 +34,40 @@ class SchemaVersionError(RuntimeError):
     """
 
 
+def sqlite_path(url: str) -> str | None:
+    """
+    The filesystem path behind a SQLite URL, or None for anything else.
+
+    Exists because the schema-mismatch message used to tell people to "delete the database
+    file at sqlite+aiosqlite:///./repobridge.db", which is a connection URL and not a path
+    -- the reader has to know to strip a scheme they have never seen. Naming the actual
+    file is the difference between an instruction and a puzzle.
+    """
+    if "sqlite" not in url:
+        return None
+    _, _, tail = url.partition(":///")
+    if not tail or tail == ":memory:":
+        return None
+    return str(Path(tail).resolve())
+
+
 class Database:
     def __init__(self, url: str, *, echo: bool = False, **engine_kwargs):
         self.url = url
         self._engine = create_async_engine(url, echo=echo, future=True, **engine_kwargs)
+
+        # SQLite ignores foreign keys unless asked, per connection. Every child table
+        # declares `ondelete="CASCADE"` back to `analysis_runs`, and without this those
+        # declarations were decoration: deleting a run would have left its files, chunks
+        # and events behind as unreachable rows. Nothing deletes a run today, which is
+        # why it was never noticed -- and is exactly why it should be correct before
+        # anything does.
+        if "sqlite" in url:
+            @event.listens_for(self._engine.sync_engine, "connect")
+            def _enforce_foreign_keys(dbapi_connection, _record):  # pragma: no cover
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.close()
         self._sessionmaker = async_sessionmaker(
             self._engine, class_=AsyncSession, expire_on_commit=False
         )
@@ -58,11 +89,15 @@ class Database:
             version = await conn.scalar(text("PRAGMA user_version"))
 
             if existing and version != SCHEMA_VERSION:
+                where = sqlite_path(self.url) or self.url
                 raise SchemaVersionError(
                     f"This database was created by schema version {version}, but this build "
-                    f"expects version {SCHEMA_VERSION}. RepoBridge v0.1 has no migrations: "
-                    f"delete the database file at {self.url} and run again. Any stored runs "
-                    "will be lost -- they can be re-created by re-analysing the repositories."
+                    f"expects version {SCHEMA_VERSION}. RepoBridge v0.1 has no migrations, "
+                    f"by decision -- see 'Upgrading' in the README.\n\n"
+                    f"    Delete this file and start RepoBridge again:\n"
+                    f"        {where}\n\n"
+                    "Stored runs will be lost. They can be re-created by re-analysing the "
+                    "same repositories; nothing else is kept in the database."
                 )
 
             await conn.run_sync(Base.metadata.create_all)
