@@ -67,7 +67,17 @@ class SummarizationError(Exception):
 
     Never carries the API key: the key is only ever placed in a request header, and
     provider response bodies are summarised by status code rather than echoed.
+
+    `detail` is the structured form of what happened, for diagnostics: the status, how many
+    attempts were made, and -- the case worth seeing in a timeline -- whether a 429 was
+    identified as a *daily* quota and deliberately not retried. That decision currently
+    surfaces only inside a prose error string, which is exactly the "vague diagnostics"
+    `evals.md` names as a failure signal.
     """
+
+    def __init__(self, message: str, detail: dict | None = None):
+        super().__init__(message)
+        self.detail = detail or {}
 
 
 @dataclass(frozen=True)
@@ -90,6 +100,8 @@ class SummaryResult:
     #: what was read and what was not -- computed from the inventory, not from the model
     provenance: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    #: structured form of `error`, for diagnostics. Empty on success.
+    error_detail: dict[str, Any] = field(default_factory=dict)
     prompt_tokens_estimated: int = 0
 
     @property
@@ -525,16 +537,46 @@ async def _call_gemini(
                         "quota-day boundary, so no retry was attempted. The quota is per "
                         f"model: set {cfg.model_env_var} to another model to continue "
                         "today. The run and its extracted content are stored, and the "
-                        "summary can be generated later."
+                        "summary can be generated later.",
+                        {
+                            "kind": "daily_quota",
+                            "quota_id": quota_id,
+                            "status_code": 429,
+                            "model": cfg.model,
+                            "attempts": attempt,
+                            "retry_decision": "fail_fast",
+                            "advertised_retry_delay_seconds": _suggested_delay(resp, body),
+                            "resets": "at the provider's quota-day boundary, not after the "
+                                      "advertised delay",
+                        },
                     )
                 last_error = SummarizationError(
                     "The summarisation provider rate-limited this request. The run is "
-                    "stored; the summary can be generated later."
+                    "stored; the summary can be generated later.",
+                    {
+                        "kind": "rate_limit",
+                        "status_code": 429,
+                        "model": cfg.model,
+                        "attempts": attempt,
+                        "retry_decision": "retry" if attempt < attempts else "attempts_exhausted",
+                    },
                 )
             else:
                 # deliberately no body: it can echo the prompt back
                 last_error = SummarizationError(
-                    f"The summarisation provider returned status {resp.status_code}."
+                    f"The summarisation provider returned status {resp.status_code}.",
+                    {
+                        "kind": "provider_status",
+                        "status_code": resp.status_code,
+                        "model": cfg.model,
+                        "attempts": attempt,
+                        "retry_decision": (
+                            "retry" if resp.status_code in RETRYABLE_STATUSES
+                            and attempt < attempts else "not_retryable"
+                            if resp.status_code not in RETRYABLE_STATUSES
+                            else "attempts_exhausted"
+                        ),
+                    },
                 )
 
             if resp.status_code not in RETRYABLE_STATUSES or attempt == attempts:
@@ -647,6 +689,7 @@ async def summarise(
             status=SummaryStatus.PROVIDER_ERROR,
             provenance=provenance,
             error=str(exc),
+            error_detail=getattr(exc, "detail", {}) or {},
             prompt_tokens_estimated=tokens,
             model=cfg.model,
         )
@@ -656,6 +699,7 @@ async def summarise(
             status=SummaryStatus.PROVIDER_ERROR,
             provenance=provenance,
             error=f"Summarisation failed unexpectedly ({type(exc).__name__}).",
+            error_detail={"kind": "unexpected", "exception": type(exc).__name__},
             prompt_tokens_estimated=tokens,
             model=cfg.model,
         )

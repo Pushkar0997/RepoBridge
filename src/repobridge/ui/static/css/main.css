@@ -246,3 +246,41 @@ button:disabled { background: #9bb8e6; cursor: progress; }
 .summary-text p { margin: 0.8rem 0; }
 .notice ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
 .notice li { margin: 0.2rem 0; }
+
+
+/* --- diagnostics timeline ------------------------------------------------
+   Level is carried by a left border rather than a background fill: a timeline
+   is read top to bottom, and a stripe scans faster than a colour wash. */
+.timeline { list-style: none; padding: 0; margin: 1rem 0; }
+.timeline-event {
+  border-left: 4px solid #d3dae5;
+  background: #fbfcfd;
+  padding: 0.6rem 0.9rem;
+  margin: 0 0 0.5rem;
+  border-radius: 0 4px 4px 0;
+}
+.timeline-event.level-info     { border-left-color: #b7c4d6; }
+.timeline-event.level-partial  { border-left-color: #c88a04; background: #fdf9ef; }
+.timeline-event.level-degraded { border-left-color: #d97706; background: #fdf3e9; }
+.timeline-event.level-error    { border-left-color: #d13438; background: #fdeaea; }
+
+.timeline-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.timeline-message { margin: 0.35rem 0 0; }
+.timeline-time { margin-left: auto; }
+.stage-name { color: #44506b; font-size: 0.85rem; }
+
+.badge-level-info     { background: #eef1f5; color: #44506b; border-color: #d3dae5; }
+.badge-level-partial  { background: #fdf3e2; color: #7a4b06; border-color: #f0d9ac; }
+.badge-level-degraded { background: #fde8d3; color: #8a4b06; border-color: #f0c48a; }
+.badge-level-error    { background: #fdeaea; color: #8a1c1c; border-color: #f2c2c2; }
+
+.count-card.level-partial  { border-color: #f0d9ac; }
+.count-card.level-degraded { border-color: #f0c48a; }
+.count-card.level-error    { border-color: #f2c2c2; }
+
+.details {
+  display: grid; grid-template-columns: minmax(9rem, auto) 1fr;
+  gap: 0.1rem 0.75rem; margin: 0.5rem 0 0; font-size: 0.85rem;
+}
+.details dt { color: #6b7280; }
+.details dd { margin: 0; word-break: break-word; }

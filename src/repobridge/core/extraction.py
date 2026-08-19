@@ -55,6 +55,28 @@ class ContentStatus(str, Enum):
     NOT_FETCHED = "not_fetched"
 
 
+class FailureKind(str, Enum):
+    """
+    Why a selected file has no content: it never arrived, or it arrived unreadable.
+
+    Both leave the file `FAILED`, so the identity `selected == read + failed +
+    not_fetched` is untouched -- but they are two different stages failing. `spec.md`
+    section 7 lists "extraction and parsing outcomes" as its own diagnostic category, and
+    a malformed notebook reported as a read failure names the wrong stage and sends a
+    reader looking at the network when the network was fine.
+
+    Deliberately **not** a new `ContentStatus` and **not** a stored column. The stored
+    `content_status` answers "did this file's content make it into the run", where both
+    kinds answer no, and the stored `error` string already carries the prose that
+    distinguishes them. A column would be a fourth schema version -- and so a forced
+    database delete for anyone holding runs -- to record something the diagnostic event
+    can carry itself.
+    """
+
+    READ = "read"
+    EXTRACT = "extract"
+
+
 class ExtractionError(Exception):
     """A file was retrieved but could not be turned into text."""
 
@@ -84,6 +106,8 @@ class FileExtraction:
     byte_count: int | None = None
     content_sha: str | None = None
     error: str | None = None
+    #: set only when `status is FAILED`: which stage failed. See `FailureKind`.
+    failure_kind: FailureKind | None = None
 
 
 @dataclass
@@ -103,6 +127,21 @@ class ExtractionResult:
     @property
     def not_fetched(self) -> list[FileExtraction]:
         return [f for f in self.files if f.status is ContentStatus.NOT_FETCHED]
+
+    @property
+    def read_failures(self) -> list[FileExtraction]:
+        """
+        Files that never arrived.
+
+        Defined as "not an extraction failure" rather than "kind is READ" so the two
+        lists partition `failed` exactly, whatever a future caller forgets to set.
+        """
+        return [f for f in self.failed if f.failure_kind is not FailureKind.EXTRACT]
+
+    @property
+    def extraction_failures(self) -> list[FileExtraction]:
+        """Files that arrived and could not be turned into text."""
+        return [f for f in self.failed if f.failure_kind is FailureKind.EXTRACT]
 
     @property
     def chunks(self) -> list[Chunk]:
@@ -277,17 +316,21 @@ async def fetch_and_extract(
                     path=path,
                     status=ContentStatus.FAILED,
                     error=f"Could not read file: {exc}",
+                    failure_kind=FailureKind.READ,
                 )
 
         try:
             chunks = extract_file(path, content)
         except ExtractionError as exc:
+            # The file arrived; it is the parse that failed. Attributed to extraction so
+            # the timeline names the stage that actually broke.
             return FileExtraction(
                 path=path,
                 status=ContentStatus.FAILED,
                 byte_count=len(content.encode("utf-8", errors="replace")),
                 content_sha=content_sha(content),
                 error=str(exc),
+                failure_kind=FailureKind.EXTRACT,
             )
 
         return FileExtraction(

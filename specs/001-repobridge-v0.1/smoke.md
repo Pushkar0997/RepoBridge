@@ -19,14 +19,19 @@ the answer to "where do we stand". Update it whenever a run is added.
 | `github/docs` | Run 8 | 2026-08-18 | 14903 | 11217 | 2227 | 14903 | 200 of 11217 | 198 | `non_text_asset` (1814) |
 | `twitter/twemoji` | Run 3 | 2026-08-17 | 7413 | 17 | 7389 | not stored | not read | — | `non_text_asset` (7378) |
 | `psf/requests` | Run 8 | 2026-08-18 | 153 | 107 | 23 | 153 | 107 of 107 | 104 | `unsupported_extension` (16) |
-| `Pushkar0997/quantum-toybox` | Run 7 | 2026-08-18 | 40 | 30 | 0 | 40 | 30 of 30 | 127 | — (nothing skipped) |
+| `Pushkar0997/quantum-toybox` | Run 10 | 2026-08-19 | 40 | 30 | 0 | 40 | 30 of 30 | 127 | — (nothing skipped) |
 | `octocat/Hello-World` | Run 8 | 2026-08-18 | 1 | 1 | 0 | 1 | 1 of 1 | 1 | — (nothing skipped) |
-| `Pushkar0997/definitely-not-a-real-repo-zzz` | Run 1 | 2026-08-17 | — | — | — | — | — | — | 404 at metadata, as intended |
+| `Pushkar0997/definitely-not-a-real-repo-zzz` | Run 10 | 2026-08-19 | — | — | — | failed run stored | — | — | 404 at metadata, as intended |
 
-> **`psf/requests` stays at its Run 8 figures deliberately.** Run 9 re-ran the same
-> repository at a deliberate cap of 20 to test file ranking, so its "files read" is 20 of
-> 107 by design. Recording that as the repository's current state would misreport how
-> RepoBridge behaves by default. Run 9 is in the run log below.
+> **`psf/requests` stays at its Run 8 figures deliberately.** Runs 9 and 10 both re-ran the
+> same repository at a deliberate cap of 20 — Run 9 to test file ranking, Run 10 to produce a
+> partial run for the diagnostics page — so their "files read" is 20 of 107 by design.
+> Recording that as the repository's current state would misreport how RepoBridge behaves by
+> default. Both are in the run log below.
+>
+> **`quantum-toybox` moves to Run 10 with identical figures** (40/30/0, 30 of 30, 127 chunks).
+> That the numbers are unchanged across Runs 6, 7 and 10 is the point: it is a regression
+> check spanning three milestones, not a new measurement.
 
 Every repo in the suite has been classified. "Rows stored" reads *not stored* for repos last
 measured before persistence existed (Runs 3 and 4), and "Files read" reads *not read* for repos
@@ -48,6 +53,7 @@ tree entry has gone unaccounted for in any run, at any scale tried.
 | Run 7 | 2026-08-18 | Summarisation on the new default model, through the new re-summarise endpoint; one live provider request |
 | Run 8 | 2026-08-18 | Four summaries chosen to exercise partial coverage; the read cap hit live for the first time; one overgeneralisation found |
 | Run 9 | 2026-08-18 | The Run 8 capped case repeated with rank-ordered file selection; the overgeneralisation is gone |
+| Run 10 | 2026-08-19 | Milestone 7 diagnostics: four induced failure cases read off the diagnostics page; zero Gemini requests |
 
 ---
 
@@ -853,3 +859,204 @@ placement is ever tightened.
 - **Equal round-robin over-weights small peripheral areas.** Four `.github/` files and four
   `tests/` files in a 20-file budget is more than either area deserves, and three of the four
   `tests/` files are certificate-directory READMEs.
+
+---
+
+### Run 10 — 2026-08-19: diagnostics against induced failures (Milestone 7)
+
+- **Date:** 2026-08-19.
+- **Purpose:** close `plan.md` Milestone 7 validation — "trigger failure cases
+  intentionally; confirm diagnostics capture the failure; confirm UI displays the run state
+  clearly". Every diagnostics behaviour until now had been exercised only against mocked
+  responses.
+- **Method:** in-process via `TestClient` against live GitHub, authenticated. Four cases:
+  a nonexistent repo, a nonexistent branch on a real repo, a completed run, and a capped run.
+  **What is recorded below is the diagnostics page as a reader sees it**, not only the API
+  payload.
+- **Gemini requests: zero, and structurally so.** `REPOBRIDGE_GEMINI_API_KEY` was removed
+  from the environment before any import, `get_gemini_api_key()` was asserted `None`, and
+  `summarization._call_gemini` was replaced with a function that raises. A single attempted
+  provider call would have aborted the run. None was attempted. The cost of this is recorded
+  under "What this run does not cover".
+- **GitHub cost:** ~57 calls (1 + 2 + 32 + 22), authenticated at 5000/hour.
+
+#### Case 1 — nonexistent repo (`Pushkar0997/definitely-not-a-real-repo-zzz`)
+
+`POST /api/analyze` → **404**, `{"message": "Repository not found on GitHub.", "run_id": …}`.
+
+| | |
+|---|---|
+| run status | `failed` |
+| outcome | worst `error`, `clean: false`, `has_failures: true` |
+| counts | 2 info, 0 partial, 0 degraded, 1 error |
+| stages | `validation[info] metadata[error] persistence[info]` |
+
+Timeline, three events:
+
+```
+  0 validation     info   Repository URL accepted as Pushkar0997/definitely-not-a-real-repo-zzz.
+  1 metadata       error  Repository not found on GitHub.   {reason: not_found, status_code: 404}
+  2 persistence    info   The failed run was stored so the attempt leaves a trace.
+```
+
+**The page** leads with the banner **"This run failed. A stage did not complete and the run
+ended there."**, then the count cards, then a stage strip reading `validation 1 · metadata 1
+· persistence 1`. **`tree` and `classification` are absent from the strip**, which is the
+designed behaviour: a stage that never ran is not shown as healthy. The `metadata` row
+carries `reason: not_found` and `status_code: 404` as labelled fields.
+
+#### Case 2 — nonexistent branch (`octocat/Hello-World` @ `no-such-branch-zzz`)
+
+`POST /api/analyze` → **404**, and the error now carries a `run_id`. **This case stored
+nothing at all before this milestone's fix**: the events were recorded, `flush_suppressed()`
+was called, and the whole timeline was discarded when the request raised.
+
+| | |
+|---|---|
+| run status | `failed` |
+| outcome | worst `error`, `has_failures: true` |
+| counts | 3 info, 0 partial, 0 degraded, 1 error |
+| stages | `validation[info] metadata[info] tree[error] persistence[info]` |
+
+```
+  0 validation     info   Repository URL accepted as octocat/Hello-World.  {requested_ref: no-such-branch-zzz}
+  1 metadata       info   Repository metadata retrieved for octocat/Hello-World.  {default_branch: master}
+  2 tree           error  Branch or ref 'no-such-branch-zzz' was not found.
+                          {reason: ref_not_found, requested_ref: no-such-branch-zzz, status_code: 404}
+  3 persistence    info   The failed run was stored so the attempt leaves a trace.
+```
+
+**This is the case worth the whole fix.** `metadata` is an **info** event and `tree` is the
+**error**: the page states, in two adjacent rows, that the repository is real and the ref is
+not. A bare "not found" cannot distinguish a typo'd branch from a typo'd repository. The
+stored run keeps `default_branch: master` from the metadata that did succeed, and
+`resolved_ref` stays `null` because nothing was ever confirmed.
+
+**The page** shows "This run failed", the ref name in the message, and `ref_not_found` as a
+labelled reason.
+
+#### Case 3 — completed run (`Pushkar0997/quantum-toybox`)
+
+40 entries, 30 selected, 0 skipped, 30 of 30 read, **127 chunks** — identical to Runs 6 and
+7, so this is also a retrieval/classification/extraction regression check across three
+milestones of change. It passes.
+
+| | |
+|---|---|
+| run status | `completed` |
+| outcome | worst `degraded`, `is_partial: false`, `has_failures: true` |
+| counts | 7 info, 0 partial, 1 degraded, 0 error |
+| stages | all eight, `summarization[degraded]`, the rest `info` |
+
+```
+  0 validation     info      Repository URL accepted as Pushkar0997/quantum-toybox.
+  1 metadata       info      Repository metadata retrieved.  {default_branch: main, language: Jupyter Notebook}
+  2 tree           info      Tree retrieved for ref 'main': 40 entries.
+  3 classification info      Classified 40 entries: 30 selected, 0 skipped, 10 directories.
+                             {accounts_for_every_entry: true}
+  4 content        info      Read 30 of 30 selected files.  {read_cap: 200, concurrency: 8}
+  5 extraction     info      Extracted 127 chunks from 30 files.
+  6 persistence    info      Run stored with 40 classified entries and 127 chunks.
+  7 summarization  degraded  No summarisation API key configured. …  {reason: not_configured}
+```
+
+**All eight pipeline stages emit, live.** The withheld key is itself an induced failure and
+the timeline names it as one: `not_configured`, at `degraded`, with the remedy in the message.
+
+#### Case 3b — re-summarising the same run
+
+Run immediately after Case 3, against the stored content, no GitHub call.
+
+```
+before:  [0, 1, 2, 3, 4, 5, 6, 7]
+after :  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]      strictly increasing: True   prefix preserved: True
+
+  8 summarization  info      Re-summarising from stored content: no GitHub call, no file re-read.
+  9 summarization  degraded  No summarisation API key configured. …
+```
+
+**Before this milestone's fix the two appended events were stored as sequence 0 and 1**, and
+sorted into the middle of the run — "Re-summarising from stored content" displayed *before*
+the tree was retrieved. The timeline is now append-only, live.
+
+#### Case 4 — capped run (`psf/requests`, `REPOBRIDGE_MAX_FILES_PER_RUN=20`)
+
+The Run 9 shape, deliberately capped. 153 entries, 107 selected, 23 skipped, **20 of 107
+read**, 20 chunks — matching Run 9 exactly.
+
+| | |
+|---|---|
+| run status | `completed` |
+| outcome | worst `degraded`, **`is_partial: true`**, `has_failures: true` |
+| counts | 7 info, **2 partial**, 1 degraded, 0 error |
+| stages | `classification[partial] content[partial]`, `summarization[degraded]`, rest `info` |
+
+```
+  3 classification info      Classified 153 entries: 107 selected, 23 skipped, 23 directories.
+  4 classification partial   23 entries were skipped without reading. Every one is listed with
+                             its reason in the file view.
+                             {skipped_non_text_asset: 7, skipped_unsupported_extension: 16}
+  5 content        info      Read 20 of 107 selected files.  {read_cap: 20}
+  6 content        partial   87 selected file(s) were not read: this run reads at most 20. The
+                             files read are a rank-ordered sample, not the first N in tree order.
+                             {not_fetched: 87, read_cap: 20}
+  7 extraction     info      Extracted 20 chunks from 20 files.
+```
+
+**Both PARTIAL events carry numbers**, which is the rule that keeps the level from becoming
+the vague catch-all `evals.md` warns about. The skip breakdown is per-reason, not a total.
+
+#### Finding — the verdict banner reports only the worst level — **RESOLVED same day**
+
+**Recorded here as found; the resolution is at the end of this section.** Case 4 is *both* partial (87 of 107 files unread) and degraded (no
+summary). The banner is a single `if/elif` chain on the worst level, so the page says only:
+
+> **This run completed with failures.** At least one stage did not complete; the run
+> continued without it, so parts of the analysis are missing.
+
+and never says "this run is partial". The partiality is not hidden — the count cards show
+`2 partial`, the stage strip marks `classification` and `content` as partial, and two
+timeline rows quantify it — but the one sentence a reader is most likely to read does not
+mention that 81% of the selected files were never opened. The banner leads with the less
+consequential of the two facts.
+
+##### Resolution — 2026-08-19
+
+Fixed. Failure and partiality are independent conditions, so the banner states both when both
+hold. The combined banner now reads:
+
+> **This run completed with failures.** At least one stage did not complete; the run continued
+> without it, so parts of the analysis are missing. **It is also partial.** At least one stage
+> that *did* complete was bounded — a limit, a budget, or a truncated listing — so content is
+> missing beyond what the failure above accounts for. Each shortfall is quantified below.
+
+The partial clause is additive rather than a fourth branch of the chain, because the
+standalone partial wording asserts "every stage completed", which is false once something has
+failed.
+
+**Worth noting how this was found.** Not by the test suite — `test_the_page_makes_a_partial_run_obvious`
+and `test_the_page_makes_a_failed_stage_obvious` both passed throughout, because each
+constructs a run with exactly one of the two conditions. It took a live run that happened to
+have both. The fix therefore ships with `test_the_banner_states_both_conditions_when_a_run_is_partial_and_degraded`
+and `test_a_failed_run_that_is_also_partial_says_both`, plus two tests that the clause stays
+additive rather than always-on.
+
+#### What this run does not cover
+
+Stated plainly, because these are the gaps in the live evidence and the verdict rests on them.
+
+- **The standalone "This run is partial" banner was never displayed.** Withholding the Gemini
+  key gives every run in Run 10 a `degraded` summarization event, so the partial-only branch
+  of the banner is unreachable in this configuration. It is covered by
+  `test_the_page_makes_a_partial_run_obvious`. This is a direct cost of the zero-request
+  constraint, not an oversight — and it is precisely the configuration that exposed the
+  combined-banner defect above, which no single-condition run would have shown.
+- **No live extraction failure.** None of the sample repos contains a malformed notebook or
+  an undecodable file, so the new `extraction_failed` attribution was not exercised live.
+  Covered by four tests.
+- **No live rate limit.** Reproducing one means deliberately exhausting a real quota. The
+  only live rate-limit observation in this suite remains Run 1's, which predates diagnostics.
+  The diagnostics path is covered by five tests.
+- **One completed and one capped repository**, not the full sample list. The other four repos
+  were not re-run: their classification figures are unchanged by this milestone, and the
+  calls would have bought no new diagnostics evidence.

@@ -21,6 +21,7 @@ from repobridge.core.github_client import (
     fetch_repo_tree,
     GitHubClientError,
 )
+from repobridge.core.diagnostics import Level, Recorder, Stage, rate_limit_details
 from repobridge.core.selection import ClassificationResult, classify_tree
 from repobridge.core.summarization import ChunkRef, SummaryResult, summarise
 from repobridge.infra import storage
@@ -189,16 +190,47 @@ async def analyze_repo(
     we intended to use is always derivable by the caller as `branch_or_ref` when they supplied
     one, else `metadata.default_branch`, so no separate "attempted" field is reported.
     """
+    # Diagnostics buffer for this run. Events are stamped with the run id at step 6,
+    # because the id does not exist until then -- see core/diagnostics.Recorder.
+    events = Recorder()
+
     # Step 1: validate and normalize URL
     try:
         normalized = normalize_github_repo_url(str(request.repo_url))
     except RepoURLValidationError as e:
+        # Deliberately not persisted: nothing reached GitHub and there is no run to attach
+        # events to. storage.create_failed_run documents the same boundary.
+        events.error(Stage.VALIDATION, e.message, repo_url=str(request.repo_url))
         raise HTTPException(status_code=400, detail={"message": e.message})
+
+    events.info(
+        Stage.VALIDATION,
+        f"Repository URL accepted as {normalized.owner}/{normalized.name}.",
+        owner=normalized.owner,
+        name=normalized.name,
+        requested_ref=request.branch_or_ref,
+    )
 
     # Step 2: fetch basic metadata from GitHub
     try:
         metadata = await fetch_repo_metadata(normalized)
     except GitHubClientError as e:
+        if e.is_rate_limit:
+            # The moved Milestone 2 criterion: a rate limit must be visible here, with
+            # which quota and when it resets, from the failing response's own headers.
+            events.error(
+                Stage.METADATA,
+                e.message,
+                reason="rate_limit",
+                **rate_limit_details(e),
+            )
+        else:
+            events.error(
+                Stage.METADATA,
+                e.message,
+                reason="not_found" if e.status_code == 404 else "github_error",
+                status_code=e.status_code,
+            )
         # Record the attempt before failing the request. A repo that never resolved is
         # otherwise the one outcome that leaves no trace, and it is exactly what a user
         # comes back to ask about.
@@ -210,12 +242,29 @@ async def analyze_repo(
             branch_or_ref=request.branch_or_ref,
             error=e.message,
         )
+        events.info(
+            Stage.PERSISTENCE,
+            "The failed run was stored so the attempt leaves a trace.",
+            run_status="failed",
+        )
+        events.flush_suppressed()
+        await storage.persist_events(session, failed_run_id, events)
+
         # the run_id travels with the error so a caller can open the failed run: it is
         # still a run, and it is the record of what went wrong
         raise HTTPException(
             status_code=_status_for(e),
             detail={"message": e.message, "run_id": failed_run_id},
         )
+
+    events.info(
+        Stage.METADATA,
+        f"Repository metadata retrieved for {metadata.get('full_name') or normalized.owner}.",
+        default_branch=metadata.get("default_branch"),
+        language=metadata.get("language"),
+        archived=metadata.get("archived"),
+        fork=metadata.get("fork"),
+    )
 
     # Step 3: decide which ref to ask GitHub for.
     # Explicit request wins; otherwise fall back to the repo's default branch.
@@ -237,21 +286,67 @@ async def analyze_repo(
     try:
         tree = await fetch_repo_tree(normalized, attempted_ref)
     except GitHubClientError as e:
+        if e.is_rate_limit:
+            events.degraded(
+                Stage.TREE, e.message, reason="rate_limit", **rate_limit_details(e)
+            )
+        elif requested_ref and e.status_code == 404:
+            events.error(
+                Stage.TREE,
+                f"Branch or ref '{requested_ref}' was not found.",
+                reason="ref_not_found",
+                requested_ref=requested_ref,
+                status_code=404,
+            )
+        else:
+            events.degraded(
+                Stage.TREE, e.message, reason="github_error", status_code=e.status_code
+            )
+
         if requested_ref and e.status_code == 404:
             # The caller named a ref that does not exist. Do not pretend this succeeded.
+            #
+            # Store the attempt, exactly as the metadata-404 path above does and for the
+            # same reason: this is a run that failed, and a failure that leaves no trace
+            # is the one thing this tool exists not to do. The metadata *did* succeed
+            # here, so it is stored too -- "the repository is real, the ref was not" is
+            # more useful than a bare failure, and it is what the timeline can then say.
+            ref_message = (
+                f"Branch or ref '{requested_ref}' was not found in "
+                f"{normalized.owner}/{normalized.name}."
+            )
+            failed_run_id = await storage.create_failed_run(
+                session,
+                repo_url=str(request.repo_url),
+                owner=normalized.owner,
+                name=normalized.name,
+                branch_or_ref=request.branch_or_ref,
+                error=ref_message,
+                metadata=metadata,
+            )
+            events.info(
+                Stage.PERSISTENCE,
+                "The failed run was stored so the attempt leaves a trace.",
+                run_status="failed",
+                requested_ref=requested_ref,
+            )
+            events.flush_suppressed()
+            await storage.persist_events(session, failed_run_id, events)
+            # the run_id travels with the error so a caller can open the failed run,
+            # as it does for a metadata failure
             raise HTTPException(
                 status_code=404,
-                detail={
-                    "message": (
-                        f"Branch or ref '{requested_ref}' was not found in "
-                        f"{normalized.owner}/{normalized.name}."
-                    )
-                },
+                detail={"message": ref_message, "run_id": failed_run_id},
             )
         # Metadata succeeded, so report the run as degraded rather than failed.
         # resolved_ref stays None: we never confirmed the ref exists, and the response
         # must not assert a resolution that did not happen.
         tree_error = f"Tree retrieval failed: {e.message}"
+        events.degraded(
+            Stage.CLASSIFICATION,
+            "Skipped: no tree arrived, so there is nothing to classify.",
+            reason="no_tree",
+        )
     else:
         # GitHub answered for this ref, so it is now genuinely resolved.
         resolved_ref = attempted_ref
@@ -269,9 +364,42 @@ async def analyze_repo(
             }
             for entry in entries[:TREE_PREVIEW_LIMIT]
         ]
+        events.info(
+            Stage.TREE,
+            f"Tree retrieved for ref '{attempted_ref}': {tree_entry_count} entries.",
+            resolved_ref=attempted_ref,
+            entries=tree_entry_count,
+        )
+
         # Classify every entry GitHub returned, not just the previewed ones.
         classification_result = classify_tree(entries)
         classification = _classification_payload(classification_result)
+
+        # Aggregate, not one event per entry: kubernetes/kubernetes skips 22,924 files and
+        # every one of them is already stored with its reason on analysis_files. See the
+        # volume rules in core/diagnostics.py.
+        events.info(
+            Stage.CLASSIFICATION,
+            f"Classified {classification_result.total_entries} entries: "
+            f"{len(classification_result.selected)} selected, "
+            f"{len(classification_result.skipped)} skipped, "
+            f"{classification_result.directories} directories.",
+            selected=len(classification_result.selected),
+            skipped=len(classification_result.skipped),
+            failed=len(classification_result.failed),
+            directories=classification_result.directories,
+            accounts_for_every_entry=classification_result.accounts_for_every_entry(),
+        )
+        if classification_result.skipped:
+            events.partial(
+                Stage.CLASSIFICATION,
+                f"{len(classification_result.skipped)} entries were skipped without "
+                "reading. Every one is listed with its reason in the file view.",
+                **{
+                    f"skipped_{reason}": count
+                    for reason, count in classification_result.counts_by_reason().items()
+                },
+            )
 
         if tree_truncated:
             # Truncation must never be discoverable only by noticing a boolean.
@@ -279,6 +407,13 @@ async def analyze_repo(
                 "GitHub truncated the tree response for this repository, so the file "
                 f"listing is incomplete. {tree_entry_count} entries were returned; the "
                 "repository contains more. Classification below covers only those."
+            )
+            events.partial(
+                Stage.TREE,
+                "GitHub truncated the tree, so files exist in this repository that "
+                "RepoBridge never saw and cannot account for.",
+                entries_returned=tree_entry_count,
+                truncated=True,
             )
 
     # Step 5: read and extract the selected files, capped. Runs only when a tree
@@ -305,6 +440,72 @@ async def analyze_repo(
                 extraction_cfg,
             )
 
+    if extraction is not None:
+        events.info(
+            Stage.CONTENT,
+            f"Read {len(extraction.read)} of {extraction.selected_total} selected files.",
+            files_read=len(extraction.read),
+            selected=extraction.selected_total,
+            read_cap=extraction.cap,
+            concurrency=extraction_cfg.max_concurrent_reads,
+            accounts_for_every_selected_file=extraction.accounts_for_every_selected_file(),
+        )
+        if extraction.not_fetched:
+            events.partial(
+                Stage.CONTENT,
+                f"{len(extraction.not_fetched)} selected file(s) were not read: this run "
+                f"reads at most {extraction.cap}. The files read are a rank-ordered "
+                "sample, not the first N in tree order.",
+                not_fetched=len(extraction.not_fetched),
+                read_cap=extraction.cap,
+            )
+        # One event per FAILED file, capped. Never one per file that worked.
+        #
+        # Split by which stage actually failed: a file that never arrived is a content
+        # failure, a file that arrived and would not parse is an extraction failure.
+        # Reporting a malformed notebook as `read_failed` names the wrong stage and sends
+        # a reader looking at the network when the network was fine.
+        for failure in extraction.read_failures:
+            events.file_failure(
+                Stage.CONTENT, failure.path, failure.error or "Could not read file.",
+                reason="read_failed",
+            )
+        if extraction.read_failures:
+            events.partial(
+                Stage.CONTENT,
+                f"{len(extraction.read_failures)} selected file(s) could not be "
+                "retrieved. The run continued; per-file failures do not end it.",
+                failed=len(extraction.read_failures),
+            )
+        events.info(
+            Stage.EXTRACTION,
+            f"Extracted {len(extraction.chunks)} chunks from {len(extraction.read)} files.",
+            chunks=len(extraction.chunks),
+            files=len(extraction.read),
+        )
+        for failure in extraction.extraction_failures:
+            events.file_failure(
+                Stage.EXTRACTION,
+                failure.path,
+                failure.error or "Could not extract text from file.",
+                reason="extraction_failed",
+            )
+        if extraction.extraction_failures:
+            events.partial(
+                Stage.EXTRACTION,
+                f"{len(extraction.extraction_failures)} file(s) were retrieved but could "
+                "not be turned into text, so their content is absent from the summary. "
+                "The run continued; per-file failures do not end it.",
+                failed=len(extraction.extraction_failures),
+                retrieved_but_unparsed=len(extraction.extraction_failures),
+            )
+    elif classification_result is not None:
+        events.info(
+            Stage.CONTENT,
+            "No file was read: classification selected nothing readable.",
+            selected=0,
+        )
+
     # Step 6: persist. A degraded run is stored too, with its error and whatever
     # metadata succeeded -- a run that vanished because it failed would be the worst
     # outcome for a tool whose pitch is that it tells you what went wrong.
@@ -324,6 +525,15 @@ async def analyze_repo(
 
     if extraction is not None:
         await storage.persist_extraction(session, run_id, extraction)
+
+    events.info(
+        Stage.PERSISTENCE,
+        f"Run stored with {tree_entry_count} classified entries and "
+        f"{len(extraction.chunks) if extraction else 0} chunks.",
+        run_id=run_id,
+        entries=tree_entry_count,
+        chunks=len(extraction.chunks) if extraction else 0,
+    )
 
     # Step 7: summarise, grounded in what was actually read.
     # A run with no chunks never reaches the provider -- see core/summarization.py.
@@ -358,6 +568,10 @@ async def analyze_repo(
         call_provider=provider,
     )
     await storage.persist_summary(session, run_id, summary)
+    _record_summary_events(events, summary)
+
+    events.flush_suppressed()
+    await storage.persist_events(session, run_id, events)
 
     # Step 8: build response
     return {
@@ -385,6 +599,71 @@ async def analyze_repo(
             "language": metadata.get("language"),
         },
     }
+
+def _record_summary_events(events: Recorder, summary: SummaryResult) -> None:
+    """
+    Put the summarisation outcome in the timeline, including *why* it stopped.
+
+    The case worth the code: a daily-quota 429 is detected and deliberately not retried,
+    because the provider advertises a ~58 s `retryDelay` while the allowance does not
+    return until the quota-day boundary. Until now that decision surfaced only inside a
+    prose `provider_error` string. Here it is a stage event carrying `retry_decision`,
+    `quota_id` and how many attempts were made -- which is the difference between a reader
+    concluding "the provider is broken" and "come back tomorrow, or switch model".
+    """
+    status = summary.status.value
+    detail = dict(summary.error_detail or {})
+
+    if status == "ok":
+        provenance = summary.provenance or {}
+        events.info(
+            Stage.SUMMARIZATION,
+            f"Summary generated by {summary.model}.",
+            model=summary.model,
+            prompt_tokens_estimated=summary.prompt_tokens_estimated,
+            chunks_included=provenance.get("chunks_included"),
+            chunks_total=provenance.get("chunks_total"),
+        )
+        if provenance.get("chunks_excluded"):
+            events.partial(
+                Stage.SUMMARIZATION,
+                f"{provenance['chunks_excluded']} of {provenance['chunks_total']} chunks "
+                "did not fit the token budget and were not sent to the model.",
+                chunks_excluded=provenance["chunks_excluded"],
+                token_budget=provenance.get("token_budget"),
+            )
+        if provenance.get("is_partial"):
+            events.partial(
+                Stage.SUMMARIZATION,
+                "This summary is based on partial coverage. "
+                + " ".join(provenance.get("limitations", [])),
+                is_partial=True,
+            )
+        return
+
+    if status == "no_content":
+        events.degraded(
+            Stage.SUMMARIZATION,
+            summary.error or "No content was extracted, so there is nothing to summarise.",
+            reason="no_content",
+        )
+        return
+
+    if status == "not_configured":
+        events.degraded(
+            Stage.SUMMARIZATION,
+            summary.error or "No summarisation API key configured.",
+            reason="not_configured",
+        )
+        return
+
+    events.degraded(
+        Stage.SUMMARIZATION,
+        summary.error or "Summary generation failed.",
+        reason=detail.get("kind", "provider_error"),
+        **{k: v for k, v in detail.items() if k != "kind"},
+    )
+
 
 def _run_summary(run) -> dict:
     """One run as JSON. Counts come from the stored run row."""
@@ -583,8 +862,17 @@ async def resummarise_run(
     if run is None:
         raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
 
+    events = Recorder()
+    events.info(
+        Stage.SUMMARIZATION,
+        "Re-summarising from stored content: no GitHub call, no file re-read.",
+        run_id=run_id,
+        source="stored chunks",
+    )
     summary = await _summarise_from_storage(session, run, provider)
     await storage.persist_summary(session, run_id, summary)
+    _record_summary_events(events, summary)
+    await storage.persist_events(session, run_id, events)
 
     return {
         "run_id": run.id,

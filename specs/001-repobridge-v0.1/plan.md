@@ -399,6 +399,47 @@ Show what happened during the analysis in a clear, inspectable way.
 - Confirm diagnostics capture the failure.
 - Confirm UI displays the run state clearly.
 
+### Deferred design item — logging hooks inside core modules
+
+**Not a Milestone 7 criterion. Recorded so the gap is a known decision, not an oversight.**
+
+`tasks.md` lists "add logging hooks in core modules to keep logs and diagnostics aligned"
+under Milestone 7. What was built satisfies the *alignment* half completely and the
+*coverage* half only for recorded events, and the difference is a design question rather
+than a missing edit — which is why it is here rather than holding the milestone open.
+
+**What exists.** Every diagnostic event is logged at the moment it is recorded, in
+`core/diagnostics.py:Recorder.record`, with severity derived from the event's level. Logs
+and the timeline therefore cannot disagree about anything the pipeline records: there is
+one call site, not two parallel sets of statements that drift.
+
+**What does not.** `core/selection.py`, `core/extraction.py` and `core/github_client.py`
+emit no logging of their own. Anything those modules do that the API layer does not turn
+into an event appears in neither the log nor the timeline — a retry inside the content
+reader, say, or the reasoning behind a specific classification.
+
+**Why this is a design question and not a mechanical addition.** Adding logging to those
+modules means deciding what they should say *independently of the timeline*, and the two
+plausible answers pull in opposite directions:
+
+- **Log only what is not an event.** Keeps the log a debugging surface for the mechanics
+  diagnostics deliberately aggregates away — per-request retries, per-file decisions,
+  timing. Risk: two surfaces with different content, and a reader has to know which to
+  consult for what.
+- **Log everything, and let events be the filtered subset.** One narrative, and the
+  timeline is a view over it. Risk: `kubernetes/kubernetes` classifies 37,393 entries, and
+  a log line per entry is exactly the volume the event model was designed to refuse. The
+  "no silent failures" principle in `AGENTS.md` does not require narrating every success.
+
+There is also a scope question underneath: structured logging is listed under Engineering
+Standards for the project as a whole, not as a diagnostics feature, so the right home for
+this may be Milestone 10 (release hardening, "review logs for noise and missing context")
+rather than Milestone 7.
+
+**Deliberately unresolved here.** Decide it when logs are reviewed as a whole, at Milestone
+10. Whatever is chosen, the property already established must survive it: a recorded event
+and its log line come from one call site and cannot drift apart.
+
 ---
 
 ## Milestone 8 — Local API surface

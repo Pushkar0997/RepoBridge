@@ -33,6 +33,12 @@ class GitHubClientError(Exception):
 
     `is_rate_limit` is set explicitly so callers do not have to re-sniff status codes.
     A 403 may or may not be a rate limit; only this client can tell.
+
+    `rate_limit` carries the *structured* form of what the message says in prose: which
+    quota, how much of it is left, and when it resets. Diagnostics needs those as fields
+    rather than as a sentence -- "rate-limit conditions are visible in diagnostics"
+    (`evals.md`, moved from Milestone 2) is only useful if the reader can tell whether to
+    wait four minutes or to authenticate.
     """
 
     def __init__(
@@ -40,11 +46,13 @@ class GitHubClientError(Exception):
         message: str,
         status_code: int | None = None,
         is_rate_limit: bool = False,
+        rate_limit: dict | None = None,
     ):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
         self.is_rate_limit = is_rate_limit
+        self.rate_limit = rate_limit or {}
 
 
 def _build_headers(cfg: GitHubConfig = DEFAULT_GITHUB_CONFIG) -> dict[str, str]:
@@ -73,6 +81,42 @@ def _is_rate_limited(resp: httpx.Response) -> bool:
     if resp.headers.get("X-RateLimit-Remaining") == "0":
         return True
     return resp.headers.get("Retry-After") is not None
+
+
+def _rate_limit_details(resp: httpx.Response) -> dict:
+    """
+    The failing response's own rate-limit headers, as fields.
+
+    **The per-response headers are the authoritative source**, not the `/rate_limit`
+    endpoint: `smoke.md` Run 1 measured that endpoint reporting `remaining: 4995` while a
+    real request's own `X-RateLimit-Remaining` header read `4978`, and every run since has
+    seen it stale. `_is_rate_limited` already reads these headers to make the decision;
+    this records what it saw so a reader can act on it.
+
+    `X-RateLimit-Resource` is the one that answers "which quota" -- core, search, graphql
+    -- which matters because exhausting one leaves the others usable.
+    """
+    detail: dict = {
+        "kind": "primary" if resp.headers.get("X-RateLimit-Remaining") == "0" else "secondary",
+        "resource": resp.headers.get("X-RateLimit-Resource"),
+        "limit": resp.headers.get("X-RateLimit-Limit"),
+        "remaining": resp.headers.get("X-RateLimit-Remaining"),
+        "used": resp.headers.get("X-RateLimit-Used"),
+        "retry_after_seconds": resp.headers.get("Retry-After"),
+        "authenticated": bool(get_github_token()),
+    }
+
+    raw_reset = resp.headers.get("X-RateLimit-Reset")
+    if raw_reset:
+        detail["reset_epoch"] = raw_reset
+        try:
+            reset_at = datetime.fromtimestamp(int(raw_reset), tz=timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            pass
+        else:
+            detail["reset_at"] = f"{reset_at:%Y-%m-%d %H:%M:%S} UTC"
+
+    return {k: v for k, v in detail.items() if v is not None}
 
 
 def _rate_limit_message(resp: httpx.Response, context: str) -> str:
@@ -165,6 +209,7 @@ def _raise_for_error(resp: httpx.Response, *, context: str, not_found_message: s
             _rate_limit_message(resp, context),
             status_code=resp.status_code,
             is_rate_limit=True,
+            rate_limit=_rate_limit_details(resp),
         )
 
     if resp.status_code >= 400:

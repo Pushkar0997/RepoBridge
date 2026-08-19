@@ -12,6 +12,7 @@ reconstructible from rows alone.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any, Iterable, Sequence
 
@@ -23,6 +24,7 @@ from repobridge.core.extraction import ExtractionResult
 from repobridge.core.selection import ClassificationResult
 from repobridge.infra.schemas import (
     AnalysisChunk,
+    AnalysisEvent,
     AnalysisFile,
     AnalysisRun,
     RunStatus,
@@ -245,13 +247,22 @@ async def create_failed_run(
     name: str,
     branch_or_ref: str | None,
     error: str,
+    metadata: dict | None = None,
 ) -> str:
     """
-    Persist a run whose metadata call failed: repo not found, rate limited, unreachable.
+    Persist a run that failed before there was anything to classify.
 
-    No file rows -- there was no tree to classify. Stored because a repository that never
-    resolved is precisely the thing a user will come back and ask about, and it is the one
-    outcome that would otherwise leave no trace at all.
+    Two callers, one shape. The metadata call failed -- repo not found, rate limited,
+    unreachable -- and there is no metadata to store; or metadata succeeded and the
+    caller named a ref that does not exist, in which case `metadata` carries what was
+    genuinely retrieved. Storing it is the point: a run that knows the repository is real
+    and the *ref* was wrong tells the user something a bare failure does not.
+
+    No file rows in either case -- there was no tree to classify. Stored because a run
+    that never resolved is precisely the thing a user comes back and asks about, and it
+    is otherwise the one outcome that leaves no trace at all.
+
+    `resolved_ref` stays None throughout: nothing was ever confirmed.
 
     URL validation failures are deliberately not persisted: those never reached GitHub, and
     there is no repository to record.
@@ -263,7 +274,7 @@ async def create_failed_run(
         name=name,
         branch_or_ref=branch_or_ref,
         resolved_ref=None,
-        metadata={},
+        metadata=metadata or {},
         tree_entry_count=0,
         tree_truncated=False,
         # `error`, not `tree_error`: no tree was ever attempted, and a column name must
@@ -457,3 +468,102 @@ async def chunks_for_summary(session: AsyncSession, run_id: str) -> list:
         )
         for r in rows
     ]
+
+
+async def persist_events(
+    session: AsyncSession,
+    run_id: str,
+    recorder,
+    cfg: DatabaseConfig = DEFAULT_DATABASE_CONFIG,
+) -> int:
+    """
+    Store a run's diagnostic events, stamping them with the run id.
+
+    Called after the run row exists, because the id is generated there and the earliest
+    events (validation, metadata) are produced several steps before it.
+
+    **Never raises into the pipeline.** Diagnostics explain a run; they must not be able to
+    fail one. A failure here is logged and swallowed, which is the one place in this
+    codebase where swallowing is right: the alternative is that the machinery for
+    explaining failures becomes a new cause of them.
+    """
+    from repobridge.core.diagnostics import rows_for
+
+    if not recorder.events:
+        return 0
+    try:
+        # Continue the run's existing timeline instead of restarting at zero. A recorder
+        # numbers from zero because it cannot know whether the run already has events;
+        # re-summarising builds a fresh one against a run that does. Without this, a
+        # re-summarise writes sequence 0 and 1 again and its events sort into the middle
+        # of the original run -- "Re-summarising from stored content" landing before the
+        # tree was retrieved. The ordering guarantee this module claims is only true if
+        # the sequence cannot restart.
+        offset = await next_event_sequence(session, run_id)
+        rows = rows_for(run_id, recorder.events, offset)
+        for start in range(0, len(rows), cfg.insert_batch_size):
+            batch = rows[start : start + cfg.insert_batch_size]
+            if batch:
+                await session.execute(insert(AnalysisEvent), batch)
+        await session.commit()
+    except Exception:  # noqa: BLE001 - see the docstring
+        logging.getLogger(__name__).exception(
+            "Could not persist diagnostics for run %s; the run itself is unaffected.", run_id
+        )
+        await session.rollback()
+        return 0
+    return len(rows)
+
+
+async def list_run_events(
+    session: AsyncSession,
+    run_id: str,
+    *,
+    stage: str | None = None,
+    level: str | None = None,
+) -> Sequence[AnalysisEvent]:
+    """
+    A run's events in pipeline order.
+
+    Ordered by `sequence`, never by `created_at` alone: two events in the same millisecond
+    must not swap places between page loads. Not paginated -- the volume rules in
+    `core/diagnostics.py` keep a run to tens of events, not thousands, which is the whole
+    point of aggregating rather than writing a row per file.
+    """
+    conditions = [AnalysisEvent.run_id == run_id]
+    if stage:
+        conditions.append(AnalysisEvent.stage == stage)
+    if level:
+        conditions.append(AnalysisEvent.level == level)
+    stmt = (
+        select(AnalysisEvent)
+        .where(*conditions)
+        # `id` is the tiebreaker, not the key: sequences are made to continue across
+        # writes (see `persist_events`), but two events can still collide if the same run
+        # is written from two places at once, and insertion order is the honest answer
+        # when they do. Ordering must never be able to depend on when the page is loaded.
+        .order_by(AnalysisEvent.sequence, AnalysisEvent.id)
+    )
+    return (await session.execute(stmt)).scalars().all()
+
+
+async def next_event_sequence(session: AsyncSession, run_id: str) -> int:
+    """
+    The sequence a new event for this run should take: one past the stored maximum.
+
+    Zero for a run with no events, so the ordinary analyse path -- which writes its whole
+    timeline in one go against a run that has none -- is unaffected.
+    """
+    highest = await session.scalar(
+        select(func.max(AnalysisEvent.sequence)).where(AnalysisEvent.run_id == run_id)
+    )
+    return 0 if highest is None else int(highest) + 1
+
+
+async def event_counts_by_level(session: AsyncSession, run_id: str) -> dict[str, int]:
+    stmt = (
+        select(AnalysisEvent.level, func.count())
+        .where(AnalysisEvent.run_id == run_id)
+        .group_by(AnalysisEvent.level)
+    )
+    return {level: count for level, count in (await session.execute(stmt)).all()}

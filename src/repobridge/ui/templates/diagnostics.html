@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+
+{#
+  The diagnostics page is the deliverable a person actually looks at, so it is a timeline,
+  not a JSON dump. Three things must be true at a glance, in this order:
+
+    1. did this run do what it should have  -> the verdict banner
+    2. which stage went wrong               -> the stage strip
+    3. what exactly happened, and when      -> the timeline
+
+  A reader who only looks at the top of the page must not come away thinking a partial run
+  was complete, which is why the banner states the outcome in words rather than leaving it
+  to be inferred from row colours.
+#}
+
+{% block content %}
+<p class="muted">
+  <a href="/">&larr; All runs</a> &middot;
+  <a href="/runs/{{ run.id }}">Run detail</a> &middot;
+  <a href="/runs/{{ run.id }}/tree">File listing</a>
+</p>
+
+<section>
+  <h2>
+    Diagnostics
+    <span class="badge badge-{{ run.status }}">{{ run.status }}</span>
+  </h2>
+  <p class="muted">
+    {{ run.owner }}/{{ run.name }} &middot; run {{ run.id }}
+    {% if run.created_at %}&middot; {{ run.created_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}
+  </p>
+
+{#
+  Failure and partiality are independent, so the banner states both when both are true.
+
+  They used to share one if/elif chain keyed on the worst level, which meant a run that
+  was partial *and* degraded was announced only as "completed with failures" -- `smoke.md`
+  Run 10 Case 4, where 87 of 107 selected files went unread and this sentence did not say
+  so. Everything else on the page already carried it: the count cards, the stage strip,
+  two quantified timeline rows. The banner is the line a reader actually reads, so it was
+  the one place the omission mattered.
+
+  The partial clause is additive rather than a fourth branch because the standalone
+  wording asserts "every stage completed", which is false once something has failed.
+#}
+{% macro also_partial() %}
+  <strong>It is also partial.</strong> At least one stage that <em>did</em> complete was
+  bounded &mdash; a limit, a budget, or a truncated listing &mdash; so content is missing
+  beyond what the failure above accounts for. Each shortfall is quantified below.
+{% endmacro %}
+
+  {% if outcome.has_failures and outcome.worst_level == 'error' %}
+    <div class="notice notice-error">
+      <strong>This run failed.</strong> A stage did not complete and the run ended there.
+      The timeline below shows which, and why.
+      {% if outcome.is_partial %}{{ also_partial() }}{% endif %}
+    </div>
+  {% elif outcome.has_failures %}
+    <div class="notice notice-error">
+      <strong>This run completed with failures.</strong> At least one stage did not
+      complete; the run continued without it, so parts of the analysis are missing.
+      {% if outcome.is_partial %}{{ also_partial() }}{% endif %}
+    </div>
+  {% elif outcome.is_partial %}
+    <div class="notice notice-warn">
+      <strong>This run is partial.</strong> Every stage completed, but at least one was
+      bounded &mdash; a limit, a budget, or a truncated listing. Each is quantified below.
+    </div>
+  {% else %}
+    <div class="notice">
+      <strong>This run is complete.</strong> Every stage completed with nothing withheld.
+    </div>
+  {% endif %}
+
+  <p class="counts">
+    {% for level, count in counts_by_level.items() %}
+      <span class="count-card level-{{ level }}">
+        <span class="count">{{ count }}</span>
+        <span class="muted small">{{ level }}</span>
+      </span>
+    {% endfor %}
+  </p>
+</section>
+
+<section>
+  <h3>Stages</h3>
+  <p class="muted small">
+    In pipeline order. A stage that never ran is absent rather than shown as healthy
+    &mdash; for a run that failed early, that absence is the point.
+  </p>
+  <p class="filters">
+    {% for row in stages %}
+      <a class="chip {{ 'chip-on' if stage_filter == row.stage else '' }} level-{{ row.worst_level }}"
+         href="{{ diagnostics_url(run.id, stage=None if stage_filter == row.stage else row.stage, level=level_filter) }}">
+        {{ row.stage }}
+        <span class="muted">{{ row.events }}</span>
+      </a>
+    {% endfor %}
+  </p>
+  <p class="filters">
+    <span class="muted small">Level:</span>
+    {% for level in levels %}
+      <a class="chip {{ 'chip-on' if level_filter == level else '' }}"
+         href="{{ diagnostics_url(run.id, stage=stage_filter, level=None if level_filter == level else level) }}">{{ level }}</a>
+    {% endfor %}
+    {% if stage_filter or level_filter %}
+      <a class="chip" href="{{ diagnostics_url(run.id) }}">clear</a>
+    {% endif %}
+  </p>
+</section>
+
+<section>
+  <h3>Timeline</h3>
+  <p class="muted small">
+    {% if stage_filter or level_filter %}
+      Showing {{ events|length }} of {{ total_events }} events
+      {% if stage_filter %}in stage <span class="mono">{{ stage_filter }}</span>{% endif %}
+      {% if level_filter %}at level <span class="mono">{{ level_filter }}</span>{% endif %}.
+      The counts above always describe the whole run, never the filtered view.
+    {% else %}
+      {{ total_events }} events, in the order the pipeline produced them.
+    {% endif %}
+  </p>
+
+  {% if not events %}
+    <p class="muted">
+      No events matched.
+      {% if total_events == 0 %}
+        This run was recorded before diagnostics existed, so it has no timeline.
+      {% endif %}
+    </p>
+  {% endif %}
+
+  <ol class="timeline">
+    {% for event in events %}
+      <li class="timeline-event level-{{ event.level }}">
+        <div class="timeline-head">
+          <span class="badge badge-level-{{ event.level }}">{{ event.level }}</span>
+          <span class="mono stage-name">{{ event.stage }}</span>
+          {% if event.created_at %}
+            <span class="muted small timeline-time">{{ event.created_at.strftime('%H:%M:%S') }}</span>
+          {% endif %}
+        </div>
+        <p class="timeline-message">{{ event.message }}</p>
+        {% if event.path %}
+          <p class="muted small">
+            file: <a class="mono" href="/runs/{{ run.id }}/tree?path={{ event.path }}">{{ event.path }}</a>
+          </p>
+        {% endif %}
+        {% if event.parsed_details %}
+          <dl class="details">
+            {% for key, value in event.parsed_details.items() %}
+              <dt class="mono">{{ key }}</dt><dd class="mono">{{ value }}</dd>
+            {% endfor %}
+          </dl>
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ol>
+</section>
+
+<section>
+  <p class="muted small">
+    Diagnostics is an account of the run, not a second copy of it. Per-file detail for
+    every entry &mdash; including everything skipped without reading &mdash; is in the
+    <a href="/runs/{{ run.id }}/tree">file listing</a>, which is why a repository with
+    22,924 skipped files still has a readable timeline here.
+  </p>
+</section>
+{% endblock %}

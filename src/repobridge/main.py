@@ -12,8 +12,11 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlencode
 
 from repobridge.api.routes_chunks import router as chunks_router
+from repobridge.api.routes_diagnostics import router as diagnostics_router
+from repobridge.api.routes_diagnostics import stage_rollup, worst_level
 from repobridge.api.routes_files import router as files_router
 from repobridge.api.routes_runs import router as runs_router
+from repobridge.core.diagnostics import Level, Stage
 from repobridge.core.selection import SkipReason
 from repobridge.infra import storage
 from repobridge.infra.db import get_database, get_session
@@ -179,7 +182,80 @@ async def run_tree_page(
     )
 
 
+def diagnostics_url(run_id: str, *, stage=None, level=None) -> str:
+    """Build a diagnostics URL keeping whichever filters are active, as `tree_url` does."""
+    params = {}
+    if stage:
+        params["stage"] = stage
+    if level:
+        params["level"] = level
+    query = urlencode(params)
+    return f"/runs/{run_id}/diagnostics" + (f"?{query}" if query else "")
+
+
+@app.get("/runs/{run_id}/diagnostics", response_class=HTMLResponse)
+async def run_diagnostics_page(
+    run_id: str,
+    request: Request,
+    stage: str | None = Query(None),
+    level: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Diagnostics view: the ordered account of what one run did.
+
+    The counts and the stage strip are always computed over *all* the run's events, never
+    over the filtered subset. Filtering the totals as well would let a reader narrow the
+    view until a run with failures looked clean.
+    """
+    run = await storage.get_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail={"message": f"Run '{run_id}' was not found."})
+
+    stage = stage if stage in {s.value for s in Stage} else None
+    level = level if level in {lv.value for lv in Level} else None
+
+    all_events = await storage.list_run_events(session, run_id)
+    events = (
+        all_events
+        if not (stage or level)
+        else await storage.list_run_events(session, run_id, stage=stage, level=level)
+    )
+
+    # decode the JSON details once, here, rather than filtering in the template
+    for event in events:
+        event.parsed_details = json.loads(event.details) if event.details else None
+
+    counts = await storage.event_counts_by_level(session, run_id)
+    overall = worst_level([e.level for e in all_events])
+
+    return templates.TemplateResponse(
+        request=request,
+        name="diagnostics.html",
+        context={
+            "title": f"Diagnostics - {run.owner}/{run.name}",
+            "run": run,
+            "events": events,
+            "total_events": len(all_events),
+            "stages": stage_rollup(all_events),
+            "levels": [lv.value for lv in Level],
+            "counts_by_level": {lv.value: counts.get(lv.value, 0) for lv in Level},
+            "outcome": {
+                "worst_level": overall,
+                "is_partial": any(e.level == Level.PARTIAL.value for e in all_events),
+                "has_failures": any(
+                    e.level in (Level.DEGRADED.value, Level.ERROR.value) for e in all_events
+                ),
+            },
+            "stage_filter": stage,
+            "level_filter": level,
+            "diagnostics_url": diagnostics_url,
+        },
+    )
+
+
 # Include API routers (Milestone 1 and later)
 app.include_router(runs_router)
 app.include_router(files_router)
 app.include_router(chunks_router)
+app.include_router(diagnostics_router)

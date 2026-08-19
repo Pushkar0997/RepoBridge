@@ -904,6 +904,172 @@ marked resolved in `plan.md` with the measurement that decided it.
 
 ---
 
+### Recorded verdict — 2026-08-19
+
+Judged against the code as it stands. A criterion is PASS only where a test or a recorded
+live result backs it. Test suite at time of judging: **487 passing**, of which **48** are
+`tests/test_diagnostics.py`. The live result is `smoke.md` Run 10 — four intentionally
+induced failure cases, read off the diagnostics **page** rather than the API payload, with
+**zero** summarisation-provider requests.
+
+**Read the evidence column for which kind of proof backs each row.** Tests here are strong
+evidence: unlike Milestone 6, nothing in diagnostics depends on what a model wrote, so a
+mocked run exercises the real code path end to end. What tests cannot supply is confirmation
+that a *real* GitHub failure produces the event we think it does — which is what Run 10 is
+for, and where it did not reach, the row says so.
+
+| Criterion | Source | Verdict | Evidence |
+|---|---|---|---|
+| Diagnostics event model | plan D1 | PASS | `core/diagnostics.py` — `Stage` (8 members, one per pipeline step), `Level` (4), `DiagnosticEvent`, `Recorder`; `infra/schemas.py:AnalysisEvent` at `SCHEMA_VERSION = 4`, guarded by the existing version check in `infra/db.py` |
+| Diagnostics API endpoint | plan D2 | PASS | `GET /api/runs/{run_id}/diagnostics` in `api/routes_diagnostics.py`; verdict, per-level counts, per-stage roll-up, filters, ordered events; `test_the_endpoint_404s_on_an_unknown_run`, plus every payload assertion in the file. Live in all four Run 10 cases |
+| Diagnostics UI view | plan D3 | PASS | `ui/templates/diagnostics.html` — banner, count cards, stage strip, filter chips, timeline; `test_the_page_renders_a_timeline`, `test_the_page_makes_a_failed_stage_obvious`, `test_the_page_says_so_when_a_run_is_complete`. Run 10 records the rendered page for all four cases |
+| Logging for key stages | plan D4 | PASS | Every event is logged at the moment it is recorded (`Recorder.record`, severity derived from level), from a single call site — so a log line and its timeline row cannot drift apart. Every stage is therefore logged, live in Run 10. `tasks.md`'s broader "logging hooks in core modules" is a separate question about what those modules should say *independently* of the timeline; it is recorded as a **deferred design item** under Milestone 7 in `plan.md`, with its options written down |
+| User can see what was accessed, skipped, failed, and why | plan E1 | PASS | Run 10 Case 4 live: entries classified, per-reason skip breakdown (`non_text_asset: 7`, `unsupported_extension: 16`), `read 20 of 107`, `87 not_fetched`. Per-file failures carry their own row keyed by path (`test_a_per_file_failure_is_findable_by_path`) |
+| Partial success is clearly visible | plan E2 | PASS | A dedicated `PARTIAL` level, count cards, the stage strip, and events that must carry numbers (`test_a_partial_event_always_carries_numbers`). Live in Run 10 Case 4. **The banner shortfall found by Run 10 is fixed**: failure and partiality are independent conditions and the banner now states both, so a run that is partial *and* degraded is no longer announced solely as "completed with failures". Tested as a combination — `test_the_banner_states_both_conditions_when_a_run_is_partial_and_degraded`, `test_a_failed_run_that_is_also_partial_says_both` — because neither single-condition test caught it, plus two tests that the clause stays additive rather than always-on |
+| Errors are not hidden | plan E3 | PASS | `test_a_run_with_failures_never_reports_itself_clean`, `test_filtering_narrows_events_but_never_the_totals`. Live: Run 10 Cases 3 and 4 both report `has_failures: true` while `run_status` is `completed`, so a completed run does not read as clean |
+| Trigger failure cases intentionally | plan V1 | PASS | `smoke.md` Run 10: nonexistent repo, nonexistent branch, withheld provider key — three induced failures against live GitHub, plus a deliberately capped run |
+| Confirm diagnostics capture the failure | plan V2 | PASS | Run 10, all four cases; every failure appears with a named reason (`not_found`, `ref_not_found`, `not_configured`) |
+| Confirm UI displays the run state clearly | plan V3 | PASS | Run 10 records the rendered page for each case. Cases 1 and 2 lead with "This run failed"; Cases 3 and 4 with "This run completed with failures". The state is stated in words, not left to row colour. See E2 for what the banner omits |
+| The diagnostics view shows each major stage | evals | PASS | All eight stages emit, asserted by `test_every_stage_of_a_complete_run_is_recorded` and observed live in Run 10 Case 3. A stage that never ran is absent rather than shown healthy (`test_a_stage_that_never_ran_is_absent_rather_than_shown_as_healthy`; live in Case 1, where `tree` and `classification` are absent) |
+| Skipped files and failure reasons are visible | evals | PASS | `test_skipped_files_are_visible_with_their_reasons`; live per-reason counts in Case 4. Per-entry detail is delegated to the file listing by design, not omitted — `test_a_large_run_does_not_write_a_row_per_entry` holds a 2,000-entry run under 30 events while keeping the aggregate exact |
+| Partial success is explicitly represented | evals | PASS | as plan E2 |
+| Error cases are understandable without reading logs | evals | PASS | Every error carries a named `reason` and its status code as fields. **The one path where this was false is now closed**: a named ref that does not exist used to record an ERROR, call `flush_suppressed()`, and discard the entire timeline unpersisted. It now stores a failed run and its events — `test_a_bad_ref_is_an_error_naming_the_ref`, `test_a_bad_ref_leaves_a_readable_run_page`, and live in Run 10 Case 2 |
+| Every meaningful failure has a trace | evals success | PASS, one documented exception | Metadata failures, ref failures, tree failures, per-file read failures, per-file parse failures and provider failures all persist. **The exception is URL validation**: a malformed URL is rejected before GitHub is contacted, so there is no repository and no run to attach events to, and its event is deliberately not persisted. That is stated in `routes_runs.py` and in `storage.create_failed_run`, and it is the only unpersisted failure left |
+| Diagnostics help explain what happened | evals success | PASS | Run 10 Case 2 is the demonstration: `metadata[info]` beside `tree[error]` tells a reader the repository is real and the ref is not, which no single status code conveys |
+| The system does not hide limitations | evals success | PASS | Filters never narrow the totals (`test_filtering_narrows_events_but_never_the_totals`); the cap, the token budget, tree truncation and unread files are all quantified events. The banner shortfall under E2 is a matter of what is *led with*, not of anything being absent |
+| **Rate-limit conditions are visible in diagnostics** *(moved from Milestone 2)* | evals success | PASS on tests; **no live confirmation** | Five tests: `test_a_metadata_rate_limit_is_visible_in_diagnostics`, `test_the_rate_limit_event_says_which_quota_and_when_it_resets`, `test_a_tree_rate_limit_degrades_the_run_and_is_visible`, `test_a_secondary_rate_limit_is_distinguished_from_a_primary_one`, and the secret-scan over stored events. The event carries resource, limit, remaining, used, reset epoch, a human-readable reset time, primary-vs-secondary, and whether the request was authenticated — enough to decide between waiting and authenticating. **Source is the failing response's own headers**, not `/rate_limit`, which Run 1 measured as stale. Run 10 did not reproduce a live rate limit: doing so means deliberately exhausting a real quota, and the criterion as written asks for visibility, which the tests establish |
+
+#### The three named failure signals
+
+**"Missing stage events" — eliminated.** `Stage` has exactly one member per step of
+`analyze_repo`, so the claim is checkable rather than aspirational, and
+`test_every_stage_of_a_complete_run_is_recorded` checks it. Run 10 Case 3 shows all eight
+live.
+
+**"Empty or vague diagnostics" — eliminated.** The level set has no `WARNING`, deliberately:
+every candidate for it is really either a bounded-but-complete stage (`PARTIAL`) or a stage
+that did not complete (`DEGRADED`), and offering both a precise and a vague option guarantees
+the vague one gets used. The rule that `PARTIAL` must carry numbers is enforced by
+`test_a_partial_event_always_carries_numbers` and visible live in Case 4's `{not_fetched: 87,
+read_cap: 20}`.
+
+**"Runs that appear successful despite major failures" — eliminated.** Tested directly, and
+Run 10 Cases 3 and 4 are live instances: `run_status: completed` alongside `has_failures:
+true` and a `degraded` summarisation row.
+
+#### The four defects found in the pre-milestone audit, and their state
+
+| Defect | State | Backed by |
+|---|---|---|
+| Re-summarising restarted the sequence at 0, so its events sorted into the middle of the run — "Re-summarising from stored content" displaying before the tree was retrieved | **Fixed.** `storage.persist_events` stamps the run's current maximum via `next_event_sequence`; `list_run_events` orders on `(sequence, id)` so a tie cannot reorder either. Stamped at write time rather than at record time, so a recorder cannot be constructed wrongly | `test_re_summarising_appends_to_the_timeline_rather_than_reordering_it` and `test_re_summarising_twice_keeps_extending_the_same_timeline`, both asserting **order** rather than message content. Live: Run 10 Case 3b, `[0…7]` then `[0…9]` |
+| A named ref that does not exist discarded its whole timeline: no run row was created, so `flush_suppressed()` was dead and `persist_events` was never called | **Fixed.** Stores a failed run, consistent with the metadata-404 path, and carries the metadata that *did* succeed so the run distinguishes a wrong ref from a wrong repository. `run_id` travels with the 404 | Three tests; live in Run 10 Case 2 |
+| `test_a_bad_ref_is_an_error_naming_the_ref` asserted on a `Recorder` it built itself — true regardless of what the pipeline did | **Replaced.** Now asserts the stored run and its stored timeline: reason `ref_not_found`, the ref named in the message, `run_status: failed`, `resolved_ref: null`, and the rendered page | The test itself, plus two new companions |
+| A malformed notebook was filed as `read_failed` at `Stage.CONTENT`; `Stage.EXTRACTION` could emit only INFO and could never report a failure | **Fixed.** `extraction.FailureKind` separates a file that never arrived from one that arrived and would not parse; parse failures are events at `Stage.EXTRACTION` with reason `extraction_failed`, and the two aggregates count only their own kind. Deliberately not a new `ContentStatus` and not a stored column — `content_status` answers "did the content make it into the run", where both answer no, and a column would be a fifth schema version for something the event already carries | Four tests, including one run containing one of each kind. **Not exercised live**: no repository in the sample list contains a malformed file |
+
+#### What is proven live, and what rests on tests
+
+Worth separating, because Run 10 was constrained to zero provider requests and that
+constraint cost specific coverage.
+
+**Proven live (Run 10).** All eight stages emitting; a stage that never ran being absent;
+metadata-404 and ref-404 both storing a run and a timeline; the append-only sequence;
+per-reason skip counts; the read cap quantified; the rendered page for four different run
+states.
+
+**Rests on tests alone.** Rate-limit events (would require exhausting a real quota);
+extraction-failure attribution (no malformed file in the sample repos); per-file failure
+capping at 50 with the remainder counted; secret redaction; **and the "This run is partial"
+banner**, which Run 10 could not display at all — withholding the provider key gives every
+run a `degraded` summarisation event, and the banner's partial-only branch is therefore
+unreachable in that configuration. That is a direct cost of the zero-request rule, recorded
+rather than worked around.
+
+#### The rate-limit criterion, judged explicitly
+
+**PASS on tests. Never live-confirmed, and that is a limitation rather than a gap.**
+
+This is the criterion moved here from Milestone 2 by the 2026-08-17 amendment (second
+pass), on the grounds that Milestone 2 detects rate limits but builds no diagnostics to
+show them in. It is satisfied, by five tests, and the event carries what a reader needs to
+act: which quota (`X-RateLimit-Resource`), the limit, remaining and used counts, the reset
+epoch and a human-readable reset time, whether the limit is primary or secondary, and
+whether the request was authenticated — which is the difference between "wait four minutes"
+and "set a token".
+
+The source is the failing response's own headers, not the `/rate_limit` endpoint, which
+`smoke.md` Run 1 measured as stale (`remaining: 4995` while a real request's own header read
+`4978`) and every run since has seen stale.
+
+**Run 10 did not reproduce one live, and no future run reasonably will.** Reproducing a
+primary rate limit means deliberately exhausting a real quota — 5,000 authenticated requests
+an hour, or dropping to the unauthenticated 60 and burning it — which costs the quota this
+project runs on and proves something the mocked responses already prove exactly. The mock
+carries the same headers a real 403 carries; there is no behaviour the live call would
+exercise that the test does not. This is recorded as an honest limitation of the evidence,
+not as work left undone, and it does not hold the milestone open.
+
+#### Milestone 7 is closed
+
+Every deliverable exists and is exercised. All eight pipeline stages emit, live. The
+endpoint and the page are real, and `smoke.md` Run 10 records the rendered page for four
+intentionally induced failure cases against live GitHub. All three named failure signals are
+eliminated. The moved Milestone 2 rate-limit criterion is satisfied, with its evidence
+boundary stated above.
+
+**The five defects found in the closing audit are fixed and tested:**
+
+1. Re-summarising restarted the event sequence at zero, interleaving its events into the
+   middle of the run. Sequences now continue from the stored maximum; ordering is
+   `(sequence, id)` so a tie cannot reorder either. Two tests assert **order**, not message
+   content — the test that existed before asserted content and passed throughout the bug.
+   Live in Run 10 Case 3b.
+2. A named ref that does not exist discarded its entire timeline, because no run row was
+   created and `persist_events` was never reached. It now stores a failed run carrying the
+   metadata that *did* succeed, so the run distinguishes a wrong branch from a wrong
+   repository. Live in Run 10 Case 2.
+3. `test_a_bad_ref_is_an_error_naming_the_ref` asserted against a `Recorder` it constructed
+   itself, and was true regardless of pipeline behaviour. Replaced with three tests against
+   the stored run, its stored timeline, and the rendered page.
+4. A malformed notebook was filed as `read_failed` at `Stage.CONTENT`, and `Stage.EXTRACTION`
+   could emit only INFO. `FailureKind` separates a file that never arrived from one that
+   arrived and would not parse; parse failures are now extraction events with reason
+   `extraction_failed`, and each aggregate counts only its own kind.
+5. The verdict banner reported only the worst level, so a run that was both partial and
+   degraded was announced solely as "completed with failures" — `smoke.md` Run 10 Case 4,
+   where 87 of 107 selected files went unread and the banner did not say so. Failure and
+   partiality are independent conditions and the banner now states both. Found by the smoke
+   run, not by the test suite: neither single-condition test covered the combination, which
+   is why the fix ships with a test for the combination specifically.
+
+**What is deferred rather than open.** `tasks.md`'s "add logging hooks in core modules" is
+recorded as a **deferred design item** under Milestone 7 in `plan.md`. The plan deliverable
+it belongs to — "Logging for key stages" — is met: every recorded event is logged from one
+call site, so logs and the timeline cannot drift. What remains is the separate question of
+what `core/selection.py`, `core/extraction.py` and `core/github_client.py` should log
+*independently* of the timeline, which has two defensible answers pulling opposite ways and
+plausibly belongs to Milestone 10's log review rather than here. It is a design decision
+with its options written down, not an unfinished edit, and it does not hold this milestone
+open.
+
+**Caveats carried forward, recorded as notes rather than blockers:**
+
+- Rate-limit visibility is test-backed only, for the reason argued above.
+- Extraction-failure attribution is test-backed only: no repository in the sample list
+  contains a malformed file.
+- Per-file failure capping, secret redaction, and the standalone "This run is partial"
+  banner are test-backed only. The last of those could not be displayed in Run 10 at all,
+  because withholding the provider key gives every run a `degraded` summarisation event and
+  makes the partial-only branch unreachable — a direct cost of the zero-request rule.
+- URL validation failures remain the one failure that leaves no stored trace. Deliberate,
+  documented in two places, and structurally sound: nothing reached GitHub, so there is no
+  repository and no run to attach events to.
+- Run 10 covered one completed and one capped repository, not the full sample list. The
+  others' classification figures are unchanged by this milestone.
+
+**Milestone 7 is recorded as closed.**
+
+---
+
 ## Milestone 8 – API evals
 
 ### What to verify

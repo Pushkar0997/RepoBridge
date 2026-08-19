@@ -1,8 +1,8 @@
 """
 SQLite schema for analysis runs and their classified entries.
 
-Three tables in v0.1: `analysis_runs`, `analysis_files` and `analysis_chunks`. The
-diagnostics-event table is still absent — nothing produces events until Milestone 7.
+Four tables in v0.1: `analysis_runs`, `analysis_files`, `analysis_chunks` and
+`analysis_events`.
 
 SCHEMA_VERSION below is checked at startup (`infra/db.py`). There are no migrations: a
 database predating a schema change is reported with a readable message and must be
@@ -40,8 +40,8 @@ class Base(DeclarativeBase):
 
 #: Bumped whenever the schema changes. Stored in SQLite's PRAGMA user_version and
 #: checked at startup. v1: runs + files. v2: adds chunks and the content columns.
-#: v3: adds the summary columns.
-SCHEMA_VERSION = 3
+#: v3: adds the summary columns. v4: adds analysis_events.
+SCHEMA_VERSION = 4
 
 
 def _utcnow() -> datetime:
@@ -246,4 +246,55 @@ class AnalysisChunk(Base):
         Index("ix_chunks_run", "run_id"),
         Index("ix_chunks_file", "file_id", "chunk_index"),
         Index("ix_chunks_run_path", "run_id", "source_path"),
+    )
+
+
+class AnalysisEvent(Base):
+    """
+    One diagnostic event: what happened at one stage of one run.
+
+    **Nothing here is the only copy of anything.** The skip reason for a path is on
+    `analysis_files`, the summary provenance is on `analysis_runs`. This table is the
+    ordered account that ties them together, so a reader can answer "what did this run do,
+    and where did it fall short" without knowing the schema. Losing it would cost
+    readability, not facts.
+
+    `sequence` exists because SQLite timestamps are not fine-grained enough to order events
+    written in the same millisecond, and a timeline that reorders itself between page loads
+    is worse than no timeline. Ordering is always `(sequence)` within a run, never
+    `created_at` alone.
+
+    The attribute is `details` rather than `metadata` -- `metadata` is reserved by
+    SQLAlchemy's declarative base -- but it is the "structured metadata" `tasks.md` asks
+    for: a JSON object, never a blob of prose.
+
+    NOTE: as with the token and the API key, no secret is ever written here. Every message
+    and every metadata value passes through `core/diagnostics.redact` first.
+    """
+
+    __tablename__ = "analysis_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: position within the run, 0-based. The ordering key.
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    stage: Mapped[str] = mapped_column(String(24), nullable=False)
+    level: Mapped[str] = mapped_column(String(16), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    #: the file this event is about, when it is about one. Its own column rather than a
+    #: JSON key so "which file failed" is an indexed lookup.
+    path: Mapped[str | None] = mapped_column(Text)
+    #: JSON object of structured metadata, or null
+    details: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        Index("ix_events_run_sequence", "run_id", "sequence"),
+        Index("ix_events_run_level", "run_id", "level"),
+        Index("ix_events_run_stage", "run_id", "stage"),
     )

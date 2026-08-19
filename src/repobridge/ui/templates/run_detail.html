@@ -1,7 +1,11 @@
 {% extends "base.html" %}
 
 {% block content %}
-<p class="muted"><a href="/">&larr; All runs</a></p>
+<p class="muted">
+  <a href="/">&larr; All runs</a> &middot;
+  <a href="/runs/{{ run.id }}/tree">File listing</a> &middot;
+  <a href="/runs/{{ run.id }}/diagnostics">Diagnostics</a>
+</p>
 
 <section>
   <h2>
