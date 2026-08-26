@@ -204,7 +204,167 @@ def get_extraction_config(cfg: ExtractionConfig = DEFAULT_EXTRACTION_CONFIG) -> 
             return cfg
         if value > 0:
             return replace(cfg, max_files_per_run=value)
+
+    # No explicit override: a shared instance uses the lower cap, because the read cap is
+    # the dominant term in that instance's GitHub budget. See DeploymentConfig.
+    deployment = get_deployment_config()
+    if deployment.is_shared:
+        return replace(cfg, max_files_per_run=deployment.shared_read_cap)
     return cfg
+
+
+@dataclass(frozen=True)
+class DeploymentConfig:
+    """
+    Running one shared instance for a feedback round, on someone else's keys.
+
+    **This is an interim posture, recorded as such in `plan.md`.** One instance, the
+    operator's GitHub token and Gemini key, one database everyone can see. Not multi-user:
+    there is no auth, no per-visitor keys and no session isolation, and adding them now
+    would be building the wrong milestone.
+
+    What that posture forces is **spend control**, because every visitor is spending the
+    operator's quota. Three limits, all off by default so local development is unchanged,
+    and all switched on together by `REPOBRIDGE_DEPLOYMENT=shared`:
+
+    - `max_analyses_per_hour` -- the whole instance. The backstop on total spend.
+    - `max_analyses_per_hour_per_client` -- one visitor. Stops one person consuming the
+      instance's allowance before anyone else arrives.
+    - `max_repo_entries` -- how large a repository this instance will accept at all. The
+      per-run read cap already bounds content calls; this bounds them *before* the run
+      starts, so a 37,393-entry repository costs two GitHub calls and a clear refusal
+      rather than the full read budget.
+
+    Every value is an environment variable, because the operator tuning a live demo
+    should not be editing code.
+    """
+
+    mode_env_var: str = "REPOBRIDGE_DEPLOYMENT"
+    #: "local" (default) or "shared". Only affects defaults and what the UI says; every
+    #: limit remains individually overridable in either mode.
+    mode: str = "local"
+
+    max_analyses_per_hour: int = 0            # 0 == no limit
+    max_analyses_per_hour_per_client: int = 0
+    max_repo_entries: int = 0
+
+    instance_limit_env_var: str = "REPOBRIDGE_MAX_ANALYSES_PER_HOUR"
+    client_limit_env_var: str = "REPOBRIDGE_MAX_ANALYSES_PER_HOUR_PER_CLIENT"
+    repo_entries_env_var: str = "REPOBRIDGE_MAX_REPO_ENTRIES"
+
+    #: Applied when mode is "shared" and the specific variable is unset:
+    #: (analyses/hour instance-wide, analyses/hour per visitor, max tree entries).
+    #:
+    #: **These four numbers are one budget, not four preferences.** The arithmetic, with
+    #: `shared_read_cap` below, is worked through in the README under "The limits, and the
+    #: arithmetic behind them" and asserted by `test_the_shared_defaults_fit_both_quotas`.
+    #: In short:
+    #:
+    #: - **20 analyses/hour instance-wide** is set by the *Gemini* quota, not the GitHub
+    #:   one: summarisation is one request per analysis and the free tier is ~500/day, so
+    #:   20/hour sustained for a full day is 480 -- inside it by construction. An hourly
+    #:   limit cannot otherwise bound a daily quota, and 40/hour would exhaust the day's
+    #:   allowance in 12 hours.
+    #: - **5/hour per visitor** means one person can take at most a quarter of the
+    #:   instance's hour, so a fourth tester arriving still finds it working.
+    #: - **5,000 entries** admits every repository in the smoke suite except
+    #:   `twitter/twemoji`, `github/docs` and `kubernetes/kubernetes`, and comfortably
+    #:   admits `psf/requests` (153), which the landing page suggests as the example.
+    shared_defaults: tuple[int, int, int] = (20, 5, 5_000)
+
+    #: Files read per analysis on a shared instance, replacing `ExtractionConfig`'s local
+    #: default of 200. Halving it halves the dominant GitHub cost: the worst-case hour
+    #: goes from 20x202 = 4,040 calls (81% of the quota, no headroom for the operator's
+    #: own use) to 20x102 = 2,040 (41%).
+    #:
+    #: Quality survives it. `smoke.md` Run 9 scored a `psf/requests` summary at 4.6/5
+    #: from **20** files; 100 is five times that, and every run still reports how many of
+    #: how many it read.
+    shared_read_cap: int = 100
+
+    #: Where the platform tells us to listen. `PORT` unprefixed is the near-universal
+    #: convention (Heroku, Render, Fly, Cloud Run, Railway); the prefixed names are
+    #: checked first so this project's own variable wins if someone sets both.
+    host_env_vars: tuple[str, ...] = ("REPOBRIDGE_HOST", "HOST")
+    port_env_vars: tuple[str, ...] = ("REPOBRIDGE_PORT", "PORT")
+    default_host: str = "127.0.0.1"
+    default_port: int = 8000
+
+    #: Whether stored runs survive a restart. Set to "ephemeral" when the platform wipes
+    #: the filesystem, so the UI can stop promising that a run can be come back to.
+    storage_env_var: str = "REPOBRIDGE_STORAGE"
+    storage: str = "persistent"
+
+    @property
+    def is_shared(self) -> bool:
+        return self.mode == "shared"
+
+    @property
+    def is_ephemeral(self) -> bool:
+        return self.storage == "ephemeral"
+
+
+DEFAULT_DEPLOYMENT_CONFIG = DeploymentConfig()
+
+
+def _positive_int(name: str) -> int | None:
+    """An environment integer, or None when unset or unusable. Never raises."""
+    raw = os.getenv(name)
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def get_deployment_config(
+    cfg: DeploymentConfig = DEFAULT_DEPLOYMENT_CONFIG,
+) -> DeploymentConfig:
+    """
+    Deployment config from the environment, read at call time.
+
+    Same rule as every other accessor here: reading at call time is what makes a limit
+    tunable on a live process and testable without reaching into module internals.
+    """
+    mode = (os.getenv(cfg.mode_env_var) or cfg.mode).strip().lower()
+    if mode not in {"local", "shared"}:
+        mode = cfg.mode
+
+    instance, client, entries = (
+        cfg.shared_defaults if mode == "shared"
+        else (cfg.max_analyses_per_hour, cfg.max_analyses_per_hour_per_client, cfg.max_repo_entries)
+    )
+    storage = (os.getenv(cfg.storage_env_var) or cfg.storage).strip().lower()
+    if storage not in {"persistent", "ephemeral"}:
+        storage = cfg.storage
+
+    def override(name: str, fallback: int) -> int:
+        """An explicit variable wins, including an explicit 0 meaning "no limit"."""
+        value = _positive_int(name)
+        return fallback if value is None else value
+
+    return replace(
+        cfg,
+        mode=mode,
+        storage=storage,
+        max_analyses_per_hour=override(cfg.instance_limit_env_var, instance),
+        max_analyses_per_hour_per_client=override(cfg.client_limit_env_var, client),
+        max_repo_entries=override(cfg.repo_entries_env_var, entries),
+    )
+
+
+def get_bind_address(cfg: DeploymentConfig = DEFAULT_DEPLOYMENT_CONFIG) -> tuple[str, int]:
+    """
+    Where to listen, from the environment.
+
+    A platform that assigns a port expects the process to read it; hardcoding 8000 is the
+    single most common reason a container starts and never receives traffic.
+    """
+    host = next((os.getenv(name) for name in cfg.host_env_vars if os.getenv(name)), None)
+    port = next((_positive_int(name) for name in cfg.port_env_vars if _positive_int(name)), None)
+    return host or cfg.default_host, port or cfg.default_port
 
 
 @dataclass(frozen=True)

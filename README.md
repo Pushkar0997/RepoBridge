@@ -217,6 +217,9 @@ and may be reworded. `details` is always an object and may be empty.
 | `rate_limited` | 429 | GitHub rate-limited the request. The message says when it resets |
 | `github_error` | 502 | GitHub was unreachable or returned a 5xx |
 | `internal_error` | 500 | RepoBridge itself failed. The detail is in the server log, deliberately not in the response |
+| `instance_limit_reached` | 429 | A shared instance's hourly analysis limit. `details` carries `limit`, `used`, `retry_after_seconds` |
+| `client_limit_reached` | 429 | Your own hourly analysis limit on a shared instance |
+| `repo_too_large` | 413 | The repository exceeds what this instance accepts. `details` carries `entries` and `limit` |
 
 Status codes name the faulting party: 4xx means your request, 429/502 means GitHub, 500
 means RepoBridge. No endpoint returns a 4xx for an upstream or internal problem.
@@ -407,6 +410,7 @@ All optional. Nothing is required to start the server.
 | `REPOBRIDGE_SUMMARY_TOKEN_BUDGET` | `120000` | Prompt token budget. Chunks beyond it are excluded and the shortfall is disclosed in the summary |
 | `REPOBRIDGE_MAX_FILES_PER_RUN` | `200` | The read cap. See "Limitations" |
 | `REPOBRIDGE_DATABASE_URL` | `sqlite+aiosqlite:///./repobridge.db` | Where runs are stored |
+| `REPOBRIDGE_DEPLOYMENT`, `REPOBRIDGE_STORAGE`, `PORT`, `HOST` | see below | Shared-instance and platform settings — see "Deploying a shared demo instance" |
 
 ```bash
 export REPOBRIDGE_GITHUB_TOKEN=your_token_here
@@ -416,6 +420,163 @@ export REPOBRIDGE_GEMINI_API_KEY=your_key_here
 There is deliberately no per-request token field: v0.1 is local-first and single-user, so a
 per-request secret would buy nothing while flowing into persistence, diagnostics and logs.
 See `specs/001-repobridge-v0.1/spec.md` section 5.
+
+---
+
+## Deploying a shared demo instance
+
+**This is an interim posture, not multi-user.** One instance, the operator's GitHub token
+and Gemini key, one database everyone can see. There are no accounts, no per-visitor keys
+and no session isolation — every analysis is visible to every visitor. It exists for a
+feedback round with a handful of testers. See "Milestone 10.5" in
+`specs/001-repobridge-v0.1/plan.md` for what that posture deliberately does not include.
+
+### One variable turns it on
+
+```bash
+REPOBRIDGE_DEPLOYMENT=shared
+```
+
+That switches on the three spend limits, changes the landing page to announce itself as a
+shared demo, and stops the configuration panel telling visitors to set keys they cannot
+set. Every limit stays individually overridable.
+
+### Environment
+
+| Variable | Default | What it does |
+|---|---|---|
+| `REPOBRIDGE_DEPLOYMENT` | `local` | `shared` enables the demo posture and the limits below |
+| `PORT` | `8000` | Port to bind. Set by most platforms automatically; `REPOBRIDGE_PORT` overrides it |
+| `HOST` | `0.0.0.0` under `python -m repobridge` | Interface to bind. `REPOBRIDGE_HOST` overrides it |
+| `REPOBRIDGE_DATABASE_URL` | `sqlite+aiosqlite:///./repobridge.db` | Point this at a mounted volume if the platform has one |
+| `REPOBRIDGE_STORAGE` | `persistent` | Set to `ephemeral` when the filesystem is wiped on restart — see below |
+| `REPOBRIDGE_MAX_ANALYSES_PER_HOUR` | `20` in shared mode | Instance-wide ceiling. `0` disables |
+| `REPOBRIDGE_MAX_ANALYSES_PER_HOUR_PER_CLIENT` | `5` in shared mode | Per-visitor ceiling. `0` disables |
+| `REPOBRIDGE_MAX_REPO_ENTRIES` | `5000` in shared mode | Largest repository accepted. `0` disables |
+| `REPOBRIDGE_GITHUB_TOKEN` | unset | **Set this.** Unauthenticated is 60 requests/hour for the whole instance |
+| `REPOBRIDGE_GEMINI_API_KEY` | unset | Without it, analyses complete and summaries report `not_configured` |
+| `REPOBRIDGE_MAX_FILES_PER_RUN` | `200` locally, `100` in shared mode | Files read per analysis — the dominant GitHub cost. See the arithmetic below |
+
+### Running it
+
+```bash
+python -m repobridge
+```
+
+Reads `HOST`/`PORT` from the environment and binds `0.0.0.0`, which is what a platform
+needs — `uvicorn repobridge.main:app` defaults to loopback and port 8000, so a container
+started that way accepts no traffic.
+
+Or with the included `Dockerfile`:
+
+```bash
+docker build -t repobridge .
+docker run -p 8000:8000 -e REPOBRIDGE_DEPLOYMENT=shared -e REPOBRIDGE_GITHUB_TOKEN=... repobridge
+```
+
+The image runs as `nobody`, keeps its database at `/data/repobridge.db`, and bakes in no
+keys. Mount a volume at `/data` to make runs survive a restart.
+
+> **The image has never been built or run.** Docker is not installed in the environment
+> this project is developed in, so the Dockerfile is the one deploy-path artefact that has
+> not been executed. What *is* checked, on every test run, is the class of mistake that
+> would otherwise surface only at deploy: that every variable it sets is one `config.py`
+> actually reads, that the database URL parses to the directory it creates, that
+> everything it copies exists, that its entrypoint module exists and honours `PORT`, and
+> that no key is baked into a layer. **Build it once before you rely on it.**
+
+### Run one worker
+
+**The rate limits are per-process, held in memory.** Two workers means two independent
+counters and an effective limit of double what you configured — silently, with no error.
+`python -m repobridge` runs one worker for exactly this reason. If you run uvicorn or
+gunicorn yourself, keep it to `--workers 1`.
+
+Limits also reset when the process restarts. Both are acceptable for a demo and neither is
+acceptable for anything real; fixing them means Redis or a database table, which is a
+dependency and a schema this posture is not worth.
+
+### The limits, and the arithmetic behind them
+
+**These four numbers are one budget, not four preferences.** Change one and re-do the sum;
+`test_the_shared_defaults_fit_both_quotas` will fail if you do not.
+
+| Limit | Shared default | Why this number |
+|---|---|---|
+| Analyses per hour, instance-wide | **20** | Set by the *Gemini* quota, not GitHub's. Summarisation is one request per analysis and the free tier is ~500/day, so a full day at 20/hour is 480 — inside it by construction. An hourly limit cannot otherwise bound a daily quota |
+| Analyses per hour, per visitor | **5** | A quarter of the instance's hour, so the fourth tester to arrive still finds it working — and enough to actually try the thing |
+| Repository size | **5,000** tree entries | Admits `psf/requests` (153), which the landing page suggests, and everything else in the smoke suite except `twitter/twemoji` (7,413), `github/docs` (14,903) and `kubernetes/kubernetes` (37,393). Checked after 2 GitHub calls and **before** any content read, so a giant costs a refusal rather than the read budget |
+| Files read per analysis | **100** (200 locally) | The dominant GitHub cost, so it moves with the rate limits. `smoke.md` Run 9 scored a `psf/requests` summary 4.6/5 from **20** files; 100 is five times that |
+
+The sum, worst case — every analysis a repository at the maximum size:
+
+```
+per analysis   2 (metadata + tree) + 100 (content reads, capped) = 102 GitHub calls
+                                                                     1 Gemini request
+
+saturated hour 20 x 102 =  2,040 GitHub calls   -> 41% of the 5,000/hour quota
+saturated day  20 x 24  =    480 Gemini requests -> inside the ~500/day free tier
+
+one visitor     5 x 102 =    510 GitHub calls/hour, 5 Gemini requests/hour
+```
+
+The GitHub figure deliberately leaves ~59% of the quota unused: the operator may be using
+the same token, and concurrency provokes GitHub's *secondary* limits well before the
+primary one.
+
+**The Gemini number is the tight one.** 480 of ~500 assumes a full 24 hours of saturation,
+which a feedback round will not do — but if you run the demo for several days, watch it.
+Lower `REPOBRIDGE_MAX_ANALYSES_PER_HOUR`, or switch `REPOBRIDGE_GEMINI_MODEL`, since the
+quota is per model.
+
+When one is reached, the response is a `429` (or `413` for size) in the standard error
+envelope, and the message names the limit, how much is used, and when it lifts:
+
+```
+You have reached your hourly analysis limit. This shared instance allows 5 analyses
+per hour per visitor, and 5 have been used. The limit lifts in 47 minutes.
+```
+
+### What a visitor sees
+
+Machine-readable equivalents are in `error.details`: `limit`, `used`, `window`,
+`retry_after_seconds`. Error codes: `instance_limit_reached`, `client_limit_reached`,
+`repo_too_large`.
+
+**Per-visitor identity is an IP address**, taken from `X-Forwarded-For` when present. It is
+a fairness measure between honest testers, not a security control — anyone who can change
+IP can have another allowance.
+
+### Ephemeral storage
+
+Many platforms wipe the filesystem on restart. If yours does, set:
+
+```bash
+REPOBRIDGE_STORAGE=ephemeral
+```
+
+RepoBridge cannot detect this itself — a wiped database and a brand-new one are
+indistinguishable — so it has to be told. What changes when you do:
+
+- The empty state stops saying "No runs yet" and says instead that this instance's storage
+  is wiped on restart and previous runs may have existed and be gone. **A wiped database
+  must never be presented as though nothing was ever analysed.**
+- A note appears beside the runs list warning that stored runs will not survive a restart.
+- Startup logs a warning, so the operator sees the posture confirmed.
+
+The alternative is a mounted volume with `REPOBRIDGE_DATABASE_URL` pointing into it, in
+which case leave `REPOBRIDGE_STORAGE` alone.
+
+### Before you share the URL
+
+- Set `REPOBRIDGE_GITHUB_TOKEN`. Without it the whole instance shares 60 requests an hour
+  and the first tester will exhaust it.
+- Use a **separate** Gemini key from any you rely on, and expect the daily quota to be
+  spent. The free tier is roughly 500 requests/day and is per model.
+- Remember every analysis is visible to everyone. The landing page says so; you should
+  say so too.
+- The API is unversioned and unauthenticated — see "API stability". Anyone with the URL
+  can call it directly.
 
 ---
 

@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,7 +12,12 @@ from repobridge.core.input import (
     normalize_github_repo_url,
     RepoURLValidationError,
 )
-from repobridge.config import get_extraction_config, get_summarization_config
+from repobridge.config import (
+    get_deployment_config,
+    get_extraction_config,
+    get_summarization_config,
+)
+from repobridge.core.limits import client_key, get_limiter
 from repobridge.core.models import AnalyzeRequest
 from repobridge.core.extraction import ExtractionResult, fetch_and_extract
 from repobridge.core.github_client import (
@@ -31,6 +36,71 @@ from repobridge.infra.db import get_session
 from repobridge.infra.schemas import RunStatus
 
 router = APIRouter(prefix="/api", tags=["runs"])
+
+
+#: Keys for the two request-rate windows. `instance` is deliberately a constant: it is
+#: one bucket for the whole process, which is what "the operator's quota" means.
+INSTANCE_KEY = "instance"
+
+
+def _limit_refusal(verdict, *, code: str, what: str):
+    """
+    One refusal, worded the way every other limit in this project is worded.
+
+    Which limit, what it is, how much of it is used, and when it lifts -- as prose *and*
+    as fields, so the UI can print a sentence and a script can read numbers. A limiter
+    that answered "429, too many requests" would be the only limit here that does not say
+    when it resets.
+    """
+    return api_error(
+        429,
+        code,
+        f"{what} This shared instance allows {verdict.limit} "
+        f"analys{'is' if verdict.limit == 1 else 'es'} per hour"
+        f"{' per visitor' if code == 'client_limit_reached' else ''}, and "
+        f"{verdict.used} ha{'s' if verdict.used == 1 else 've'} been used. "
+        f"The limit lifts {verdict.retry_after_human}.",
+        limit=verdict.limit,
+        used=verdict.used,
+        window="1 hour",
+        retry_after_seconds=verdict.retry_after_seconds,
+        scope=verdict.scope,
+    )
+
+
+def _check_request_limits(request_obj: Request | None, deployment):
+    """
+    The two rate windows, checked before anything is spent.
+
+    Checked, not consumed: an analysis that fails validation should not cost a visitor
+    part of their allowance. `record` happens once the run is under way.
+    """
+    limiter = get_limiter()
+    who = client_key(
+        request_obj.headers.get("x-forwarded-for") if request_obj else None,
+        request_obj.client.host if request_obj and request_obj.client else None,
+    )
+
+    verdict = limiter.check(
+        INSTANCE_KEY, deployment.max_analyses_per_hour, scope="instance"
+    )
+    if not verdict.allowed:
+        raise _limit_refusal(
+            verdict,
+            code="instance_limit_reached",
+            what="This instance has reached its hourly analysis limit.",
+        )
+
+    verdict = limiter.check(
+        f"client:{who}", deployment.max_analyses_per_hour_per_client, scope="client"
+    )
+    if not verdict.allowed:
+        raise _limit_refusal(
+            verdict,
+            code="client_limit_reached",
+            what="You have reached your hourly analysis limit.",
+        )
+    return who
 
 
 def _status_for(error: GitHubClientError) -> int:
@@ -164,6 +234,7 @@ def _classification_payload(result: ClassificationResult) -> dict:
 @router.post("/analyze", response_class=JSONResponse)
 async def analyze_repo(
     request: AnalyzeRequest,
+    http_request: Request,
     session: AsyncSession = Depends(get_session),
     provider: SummaryProvider | None = Depends(get_summary_provider),
 ):
@@ -197,6 +268,13 @@ async def analyze_repo(
     # because the id does not exist until then -- see core/diagnostics.Recorder.
     events = Recorder()
 
+    # Step 0: spend control. Off entirely unless this instance is configured with limits,
+    # so local use is unchanged. Before validation would charge a visitor for a typo;
+    # after the GitHub calls would be too late to protect the quota. Here is the point
+    # where nothing has been spent and the request is worth counting.
+    deployment = get_deployment_config()
+    who = _check_request_limits(http_request, deployment)
+
     # Step 1: validate and normalize URL
     try:
         normalized = normalize_github_repo_url(str(request.repo_url))
@@ -205,6 +283,10 @@ async def analyze_repo(
         # events to. storage.create_failed_run documents the same boundary.
         events.error(Stage.VALIDATION, e.message, repo_url=str(request.repo_url))
         raise api_error(400, "invalid_repo_url", e.message, repo_url=str(request.repo_url))
+
+    # The URL is real, so this attempt counts against the allowance.
+    get_limiter().record(INSTANCE_KEY)
+    get_limiter().record(f"client:{who}")
 
     events.info(
         Stage.VALIDATION,
@@ -362,6 +444,35 @@ async def analyze_repo(
         # Deliberately not called a "total": when GitHub truncates, this is only
         # what the API chose to return.
         tree_entry_count = len(entries)
+
+        # Spend control, part two: how large a repository this instance will accept.
+        #
+        # Checked here because here is the first moment the size is known, and it is
+        # still cheap: two GitHub calls spent, none of the up-to-200 content reads. A
+        # 37,393-entry repository costs a refusal rather than the whole read budget.
+        # The refusal names the repository's size and the instance's ceiling, so it
+        # reads as a policy rather than as a malfunction.
+        if deployment.max_repo_entries and tree_entry_count > deployment.max_repo_entries:
+            events.error(
+                Stage.TREE,
+                f"Repository is larger than this instance accepts: {tree_entry_count} "
+                f"entries against a limit of {deployment.max_repo_entries}.",
+                reason="repo_too_large",
+                entries=tree_entry_count,
+                limit=deployment.max_repo_entries,
+            )
+            events.flush_suppressed()
+            raise api_error(
+                413,
+                "repo_too_large",
+                f"{normalized.owner}/{normalized.name} has {tree_entry_count:,} tree "
+                f"entries. This shared instance accepts repositories up to "
+                f"{deployment.max_repo_entries:,} entries, so that reading them cannot "
+                "exhaust the operator's GitHub quota. Try a smaller repository.",
+                entries=tree_entry_count,
+                limit=deployment.max_repo_entries,
+                repo=f"{normalized.owner}/{normalized.name}",
+            )
         tree_truncated = bool(tree.get("truncated", False))
         tree_preview = [
             {

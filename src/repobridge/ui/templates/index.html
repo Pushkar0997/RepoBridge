@@ -2,11 +2,33 @@
 {% from "_state_flags.html" import state_flags %}
 
 {% block content %}
+{#
+  A tester arrives with no context. The first thing on the page has to answer "what is
+  this, what do I do, and what am I looking at" before anything else -- and on a shared
+  instance it must also say that this is a demo running on someone else's quota, because
+  that changes what a visitor should reasonably do with it.
+#}
+{% if deployment.shared %}
+  <div class="notice notice-demo" role="note">
+    <strong>This is a shared demo instance.</strong>
+    It runs on one operator&rsquo;s API keys and one database, so
+    <strong>every analysis here is visible to everyone using it</strong> &mdash; do not
+    analyse anything you would not post publicly. There are no accounts and no private
+    workspaces. Usage limits apply and are listed below.
+  </div>
+{% endif %}
+
 <section>
   <h2>Analyze a GitHub repository</h2>
   <p class="muted">
-    Paste a public GitHub repo URL. RepoBridge fetches the tree, classifies every entry,
-    reads what it can, and stores the run so you can come back to it.
+    Paste the URL of a <strong>public GitHub repository</strong>. RepoBridge fetches its
+    file tree, decides which files are worth reading and why, reads and normalises those
+    it can, writes a summary grounded only in what it actually read, and records what
+    happened at every stage &mdash; including what it skipped and what failed.
+  </p>
+  <p class="muted small">
+    Try <span class="mono">https://github.com/psf/requests</span> if you want something to
+    paste. A repository this size takes roughly ten seconds.
   </p>
 
   <form id="analyze-form">
@@ -108,6 +130,12 @@
     {% endif %}
   </p>
 
+  {% if runs and deployment.ephemeral %}
+    <p class="muted small warn-inline">
+      Stored runs do not survive a restart on this instance.
+    </p>
+  {% endif %}
+
   {% if runs %}
     <table>
       <caption class="sr-only">Recent analysis runs, newest first</caption>
@@ -154,7 +182,22 @@
       <a href="/">show all</a>.
     </p>
   {% else %}
-    <p class="muted">No runs yet. Analyze a repository above.</p>
+    {#
+      A wiped database and a never-used one look identical from here, and saying "no runs
+      yet" to someone whose runs were deleted by a restart would be the one dishonest
+      empty state in the project. When storage is declared ephemeral, say so instead of
+      implying nothing was ever analysed.
+    #}
+    {% if deployment.ephemeral %}
+      <p class="muted">
+        <strong>No runs stored right now.</strong> This instance keeps its database on
+        storage that is wiped when the process restarts, so previous runs &mdash; yours or
+        anyone else&rsquo;s &mdash; may have existed and be gone. Analyze a repository
+        above to start a new one.
+      </p>
+    {% else %}
+      <p class="muted">No runs yet. Analyze a repository above.</p>
+    {% endif %}
   {% endif %}
 </section>
 {% endblock %}

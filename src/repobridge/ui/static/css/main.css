@@ -285,6 +285,18 @@ table.tree td { font-size: 0.88rem; }
 }
 .notice-error .mono, .notice-warn .mono { color: inherit; }
 
+/* The shared-demo banner: informational, so neither the warning amber nor the error red.
+   It states a condition of the instance, not a problem with a run. */
+.notice-demo {
+  border-color: #c7dbf8;
+  border-left-color: var(--accent);
+  background: var(--accent-tint);
+  color: #17365f;
+}
+
+.limit-list { margin: var(--s2) 0 var(--s3); padding-left: 1.15rem; }
+.limit-list li { margin: 0.2rem 0; }
+
 .warn-inline {
   display: inline-block;
   color: var(--warn-text);

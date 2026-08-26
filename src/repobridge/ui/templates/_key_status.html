@@ -19,6 +19,19 @@
 <section class="card config-panel" aria-labelledby="config-heading">
   <h2 id="config-heading" class="card-title">Configuration</h2>
 
+  {#
+    On a shared instance the keys belong to whoever is running it, so "export this
+    variable and restart" is advice the reader cannot act on and should not be given. What
+    a visitor needs instead is whether the features that depend on each key are available
+    to them right now.
+  #}
+  {% if deployment.shared %}
+    <p class="muted small">
+      This instance runs on the operator&rsquo;s API keys. Nothing here is yours to set,
+      and no key is ever entered in the browser.
+    </p>
+  {% endif %}
+
   <ul class="key-list">
     <li class="key-row {{ 'key-on' if keys.github else 'key-off' }}">
       <span class="key-state">{{ 'configured' if keys.github else 'not set' }}</span>
@@ -28,6 +41,12 @@
           <p class="muted small">
             GitHub requests are authenticated: 5,000 per hour. One analysis costs two
             requests plus one per file read.
+          </p>
+        {% elif deployment.shared %}
+          <p class="small">
+            <strong>Unauthenticated: 60 GitHub requests per hour for the whole
+            instance.</strong> Analyses may fail with a rate-limit error until it resets.
+            The operator can fix this; you cannot.
           </p>
         {% else %}
           <p class="small">
@@ -53,6 +72,13 @@
             The free-tier daily quota is per model; set
             <span class="mono">{{ keys.model_env }}</span> to switch.
           </p>
+        {% elif deployment.shared %}
+          <p class="small">
+            <strong>Summaries are unavailable on this instance.</strong>
+            Analyses still complete in full &mdash; the tree is classified, files are read
+            and chunked, and everything is stored and browsable. Only the summary section
+            will report <span class="mono">not_configured</span>.
+          </p>
         {% else %}
           <p class="small">
             <strong>No summaries will be generated.</strong>
@@ -73,4 +99,24 @@
     Read from the environment only, never from a form field or a request, and never
     displayed here &mdash; this panel reports only whether each one is set.
   </p>
+
+  {% if deployment.shared %}
+    <h3>Limits on this instance</h3>
+    <ul class="limit-list small">
+      {% if deployment.max_analyses_per_hour %}
+        <li><strong>{{ deployment.max_analyses_per_hour }}</strong> analyses per hour, everyone combined</li>
+      {% endif %}
+      {% if deployment.max_analyses_per_hour_per_client %}
+        <li><strong>{{ deployment.max_analyses_per_hour_per_client }}</strong> analyses per hour per visitor</li>
+      {% endif %}
+      {% if deployment.max_repo_entries %}
+        <li>repositories up to <strong>{{ "{:,}".format(deployment.max_repo_entries) }}</strong> tree entries</li>
+      {% endif %}
+      <li>at most <strong>{{ deployment.read_cap }}</strong> files read per analysis &mdash; larger repositories are sampled, and every run says how many of how many it read</li>
+    </ul>
+    <p class="muted small">
+      The limits exist because every analysis spends the operator&rsquo;s GitHub and
+      summarisation quota. When one is reached the page says which, and when it lifts.
+    </p>
+  {% endif %}
 </section>

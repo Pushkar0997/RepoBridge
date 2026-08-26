@@ -25,6 +25,8 @@ from repobridge.infra import storage
 from repobridge.config import (
     DEFAULT_GITHUB_CONFIG,
     DEFAULT_SUMMARIZATION_CONFIG,
+    get_bind_address,
+    get_deployment_config,
     get_extraction_config,
     get_gemini_api_key,
     get_github_token,
@@ -74,10 +76,13 @@ async def lifespan(app: FastAPI):
         raise
 
     extraction = get_extraction_config()
+    deployment = get_deployment_config()
     logger.info(
-        "RepoBridge %s ready | database=%s | github_token=%s | gemini_key=%s | "
-        "model=%s | read_cap=%s files | concurrency=%s",
+        "RepoBridge %s ready | mode=%s | storage=%s | database=%s | github_token=%s | "
+        "gemini_key=%s | model=%s | read_cap=%s files | concurrency=%s",
         APP_VERSION,
+        deployment.mode,
+        deployment.storage,
         sqlite_path(database.url) or database.url,
         "set" if get_github_token() else "NOT SET (60 requests/hour, unauthenticated)",
         "set" if get_gemini_api_key() else "NOT SET (runs complete; no summaries)",
@@ -85,6 +90,20 @@ async def lifespan(app: FastAPI):
         extraction.max_files_per_run,
         extraction.max_concurrent_reads,
     )
+    if deployment.is_shared:
+        # The limits an operator most needs confirmed at boot: getting them wrong is
+        # otherwise only visible as an unexpectedly large bill.
+        logger.info(
+            "Shared deployment | analyses/hour: instance=%s client=%s | max repo "
+            "entries=%s | limits are per-process, so run a single worker",
+            deployment.max_analyses_per_hour or "unlimited",
+            deployment.max_analyses_per_hour_per_client or "unlimited",
+            deployment.max_repo_entries or "unlimited",
+        )
+    if deployment.is_ephemeral:
+        logger.warning(
+            "Storage is declared ephemeral: stored runs will not survive a restart."
+        )
     yield
 
 
@@ -135,6 +154,27 @@ def tree_url(run_id: str, *, status=None, reason=None, path=None, offset: int = 
         params["offset"] = offset
     query = urlencode(params)
     return f"/runs/{run_id}/tree" + (f"?{query}" if query else "")
+
+
+def _deployment_context() -> dict:
+    """
+    What kind of instance this is, for the templates.
+
+    Kept beside `_key_status` because the two are read together: *whose* keys these are
+    changes what there is to say about them. On a local install the keys are the reader's
+    and the useful thing is how to set them; on a shared instance they are the operator's
+    and that advice is simply wrong -- a tester cannot set an environment variable on
+    someone else's server.
+    """
+    deployment = get_deployment_config()
+    return {
+        "shared": deployment.is_shared,
+        "ephemeral": deployment.is_ephemeral,
+        "max_analyses_per_hour": deployment.max_analyses_per_hour,
+        "max_analyses_per_hour_per_client": deployment.max_analyses_per_hour_per_client,
+        "max_repo_entries": deployment.max_repo_entries,
+        "read_cap": get_extraction_config().max_files_per_run,
+    }
 
 
 def _key_status() -> dict:
@@ -232,6 +272,7 @@ async def index(
             "bad_dates": bad_dates,
             "statuses": [s.value for s in RunStatus],
             "keys": _key_status(),
+            "deployment": _deployment_context(),
         },
     )
 
@@ -263,6 +304,7 @@ async def run_detail_page(
                 json.loads(run.summary_provenance) if run.summary_provenance else None
             ),
             "keys": _key_status(),
+            "deployment": _deployment_context(),
         },
     )
 

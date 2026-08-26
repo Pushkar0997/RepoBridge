@@ -513,6 +513,89 @@ Make v0.1 stable enough to keep iterating on.
 
 ---
 
+---
+
+## Milestone 10.5 — Shared demo instance (interim posture)
+
+**Numbered 10.5, not 11, because it is not the next step toward the product.** It is a
+sideways move to get one instance in front of a handful of testers for a feedback round,
+and it should be recognisable as such later.
+
+### What this posture is
+
+One instance. **The operator's** GitHub token and Gemini key. **One database, visible to
+everyone who has the URL.** No accounts, no login, no per-visitor keys, no session
+isolation, no privacy between visitors. Intended for a small feedback round with people
+who have been told what it is; **not intended for public release**.
+
+Every analysis a visitor runs appears in every other visitor's runs list, along with the
+repository they chose. The landing page says so in the first thing on the page, because a
+tester who has not been told that will assume otherwise.
+
+### What is deliberately not built, and why
+
+**Auth, per-user keys and session isolation are a later milestone.** Building them now
+would be building the wrong thing, for three reasons worth writing down:
+
+1. **The feedback round does not need them.** A handful of known testers looking at public
+   repositories do not need to be hidden from each other. What they need is for the
+   instance to still be working when the fourth of them arrives.
+2. **They would be built against guesses.** Whether RepoBridge ends up multi-user at all,
+   and whether users bring their own keys or share the operator's, is exactly the sort of
+   question this feedback round exists to answer. Building the mechanism first would
+   fix the answer before the question was asked.
+3. **They are not what breaks first.** What breaks first is the quota: one visitor pasting
+   `kubernetes/kubernetes` can spend the read budget for the whole demo. That is the
+   problem this milestone solves and the only one it solves.
+
+Also not built: any attempt to make the rate limits survive a restart or work across
+processes. Both would mean Redis or a schema, for a demo that runs one worker.
+
+### What was built
+
+- **Spend control** (`core/limits.py`): three limits, all off by default, all switched on
+  by `REPOBRIDGE_DEPLOYMENT=shared`, all individually overridable — analyses per hour for
+  the instance, analyses per hour per visitor, and a maximum repository size checked after
+  two GitHub calls and before up to two hundred content reads. Refusals name the limit,
+  what is used, and when it lifts, like every other limit in the project.
+- **Platform configuration**: `python -m repobridge` reads `HOST`/`PORT` from the
+  environment and binds `0.0.0.0`; a `Dockerfile` as a fallback; the database path already
+  came from the environment and was verified to.
+- **An ephemeral-storage posture** (`REPOBRIDGE_STORAGE=ephemeral`): declared rather than
+  detected, because a wiped database and a new one are indistinguishable. Its one hard
+  requirement is that **a wiped database is never presented as though nothing was ever
+  analysed**.
+- **First-contact copy**: what this is, what to paste, how long it takes, that it is a
+  shared demo, and what the limits are. The configuration panel no longer tells visitors
+  to set keys that are not theirs.
+
+### The boundary this posture must not be allowed to blur
+
+**Nothing here is a security control.** Per-visitor identity is an IP address from a
+header the client controls. The limits are fairness between honest testers and a ceiling
+on the operator's bill — nothing more. If this instance is ever exposed beyond a known
+group, the correct move is to take it down, not to tighten these numbers.
+
+### When to leave this posture
+
+Whichever comes first:
+
+- the feedback round ends — take the instance down;
+- someone wants to use RepoBridge on repositories they would not post publicly — that is
+  the requirement that forces real isolation, and it should be built as its own milestone
+  with the question it answers written down first;
+- the instance needs more than one worker — at which point the limits silently double, and
+  the shared-state problem has to be solved properly rather than deferred again.
+
+### Recorded consequence, not resolved
+
+The API remains unauthenticated and unversioned, so anyone with the URL can call
+`POST /api/analyze` directly and bypass the UI entirely. The rate limits apply to the
+endpoint, not to the page, so they still hold — but there is no other barrier, and the
+`v0.1 API is unstable` statement in the README now has a second reading: it is also
+unprotected. Acceptable for a known group behind a shared link; not acceptable for a URL
+that gets posted anywhere.
+
 ## Global acceptance rule
 
 A milestone is complete only when:
