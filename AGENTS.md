@@ -1,3 +1,18 @@
+## Read order
+
+1. `AGENTS.md` (this file)
+2. `CONTRACT.md` — the invariants. Read before every task, not once.
+3. `BRIEF.md` — where things stand right now
+4. `specs/002-repobridge-v0.2/plan.md` — the active milestone
+5. `AGENT_LOG.md` — the top three entries
+
+State which milestone and task you are on before touching anything.
+
+`CONTRACT.md` outranks every other document. If it conflicts with a spec file, the
+spec file is stale — say so rather than picking.
+
+---
+
 # RepoBridge Development Constitution (AGENTS.md)
 
 ## Purpose
@@ -98,3 +113,34 @@ Users should always be able to see:
 - and how summaries and outputs were produced.
 
 The goal is to make repo context inspection reliable, grounded, and pleasant to work with, without turning RepoBridge into a heavy, overcomplicated system.
+
+---
+
+## Budget for metered dependencies
+
+Live calls to the summarisation provider are limited to roughly **500 requests per
+day** on the configured model, and to **20 per day** on quality-tier models.
+
+Verify live **once**, at the end of a task, deliberately. Never probe or iterate
+against the live API — reproduce the problem with a mock and spend the real call only
+to confirm the fix.
+
+A previous session burned an entire day's quota on diagnostic probing of what turned
+out to be ordinary load flakiness. If you exhaust a quota while debugging, stop and
+report it rather than waiting it out.
+
+GitHub is 5,000 requests/hour authenticated, 60 unauthenticated. Do not use
+`/rate_limit` for accounting — it was measured 17 calls behind reality. Read
+per-response headers.
+
+---
+
+## Found, not fixed
+
+Every response ends with a list of everything you noticed but did not touch.
+
+This is what makes tight scoping survivable. Without it you either fix things outside
+the task — producing an unreviewable diff — or stay silent and the observation is
+lost. Do not fix things outside the task. Do not stay silent about them.
+
+The list may not be empty without a reason.
