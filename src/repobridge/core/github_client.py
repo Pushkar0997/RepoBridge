@@ -18,6 +18,7 @@ from repobridge.config import (
     GitHubConfig,
     get_github_token,
 )
+from repobridge.core.diagnostics import redact
 from repobridge.core.input import NormalizedRepoURL
 
 logger = logging.getLogger(__name__)
@@ -211,6 +212,10 @@ def _raise_for_error(resp: httpx.Response, *, context: str, not_found_message: s
 
     GitHub's raw response body is logged but never included in the message: it goes
     straight into the HTTP response the caller sees.
+
+    The logged copy is redacted **before** it is truncated, not after. Truncating first
+    can cut a token in half and leave a fragment that `redact` no longer recognises --
+    which is exactly the partial reveal CONTRACT I-6's fragment scan exists to catch.
     """
     if resp.status_code == 404:
         raise GitHubClientError(not_found_message, status_code=404)
@@ -225,7 +230,10 @@ def _raise_for_error(resp: httpx.Response, *, context: str, not_found_message: s
 
     if resp.status_code >= 400:
         logger.debug(
-            "GitHub API error %s while %s: %s", resp.status_code, context, resp.text[:500]
+            "GitHub API error %s while %s: %s",
+            resp.status_code,
+            context,
+            redact(resp.text)[:500],
         )
         raise GitHubClientError(
             f"GitHub API returned status {resp.status_code} while {context}.",

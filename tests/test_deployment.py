@@ -443,16 +443,80 @@ def test_a_repository_at_the_limit_is_accepted(install_transport, monkeypatch):
 
 
 def test_the_size_refusal_is_recorded_in_diagnostics(install_transport, monkeypatch):
-    """A refusal is a thing that happened to a request; it should not be invisible."""
+    """
+    A refusal is a thing that happened to a request; it should not be invisible.
+
+    This used to store nothing and assert that the response alone explained itself. It
+    was the one failure that reached GitHub and left no trace, which CONTRACT I-7 forbids
+    -- so the refusal now stores a failed run and the trace is checked where a user would
+    actually look for it.
+    """
     monkeypatch.setenv("REPOBRIDGE_DEPLOYMENT", "shared")
     monkeypatch.setenv("REPOBRIDGE_MAX_REPO_ENTRIES", "2")
     _install(install_transport, _tree([_blob(f"f{i}.md", 40) for i in range(9)]))
 
     resp = _analyze()
     assert resp.status_code == 413
-    # no run row is created (nothing was classified), so the trace is the log and the
-    # response; this asserts the response carries enough to explain itself
-    assert resp.json()["error"]["details"]["repo"] == "octo/demo"
+    details = resp.json()["error"]["details"]
+    assert details["repo"] == "octo/demo"
+
+    # the run_id travels with the refusal, as it does for a metadata failure
+    run_id = details["run_id"]
+    run = client.get(f"/api/runs/{run_id}").json()
+    assert run["status"] == "failed"
+    assert "9 tree entries" in run["error"]
+    assert run["tree_error"] is None, "the tree call succeeded; only our policy refused"
+
+    # and the timeline says why, in the stage that refused
+    events = client.get(f"/api/runs/{run_id}/diagnostics").json()["items"]
+    refusal = [
+        e for e in events
+        if e["stage"] == "tree" and e["details"].get("reason") == "repo_too_large"
+    ]
+    assert len(refusal) == 1
+    assert refusal[0]["level"] == "error"
+    assert refusal[0]["details"]["entries"] == 9
+    assert refusal[0]["details"]["limit"] == 2
+
+    # and the persistence stage records that the refusal was itself stored
+    assert any(
+        e["stage"] == "persistence" and e["details"].get("run_status") == "failed"
+        for e in events
+    )
+
+
+def test_the_refused_run_keeps_what_github_actually_confirmed(install_transport, monkeypatch):
+    """
+    The tree call *succeeded*. Nulling `resolved_ref` and zeroing the entry count would
+    be a lie in the opposite direction -- the same reasoning that keeps `resolved_ref`
+    populated on a truncated tree (CONTRACT I-3).
+    """
+    monkeypatch.setenv("REPOBRIDGE_DEPLOYMENT", "shared")
+    monkeypatch.setenv("REPOBRIDGE_MAX_REPO_ENTRIES", "2")
+    _install(install_transport, _tree([_blob(f"f{i}.md", 40) for i in range(9)]))
+
+    run_id = _analyze().json()["error"]["details"]["run_id"]
+    run = client.get(f"/api/runs/{run_id}").json()
+
+    assert run["resolved_ref"] == "main"
+    assert run["tree_entry_count"] == 9
+    # nothing was classified, so the identity is vacuous rather than violated
+    assert run["stored_rows"]["stored_identity_holds"] is None
+    assert run["stored_rows"]["stored_extraction_identity_holds"] is None
+
+
+def test_a_refused_repository_is_listed_like_any_other_failed_run(
+    install_transport, monkeypatch
+):
+    """Otherwise a visitor sees a 413 and then an empty runs list, and cannot reconcile them."""
+    monkeypatch.setenv("REPOBRIDGE_DEPLOYMENT", "shared")
+    monkeypatch.setenv("REPOBRIDGE_MAX_REPO_ENTRIES", "2")
+    _install(install_transport, _tree([_blob(f"f{i}.md", 40) for i in range(9)]))
+    _analyze()
+
+    listing = client.get("/api/runs", params={"status": "failed"}).json()
+    assert listing["total"] == 1
+    assert listing["items"][0]["repo_url"].endswith("octo/demo")
 
 
 def test_no_limit_applies_when_the_instance_is_local(install_transport, monkeypatch):

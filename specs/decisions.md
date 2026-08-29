@@ -71,8 +71,15 @@ default, and every future layer must remember to scrub it. The environment path 
 matches how MCP servers conventionally receive credentials, so it is the direction
 that leads somewhere.
 
-**Rejected:** *per-request `github_token`* — was in the original spec, accepted and
-silently dropped by the code. Removed and the spec amended rather than implemented.
+**Rejected:** *per-request `github_token`* — the original `spec.md` §5 listed it as an
+input. No such field was ever implemented, and the spec was amended (2026-08-18) to say
+it is environment-only rather than the code changed to accept it.
+
+**Rejected in the same amendment:** *per-request `llm_provider`* — "(string, optional)
+Choice of LLM backend". This is the one that was genuinely accepted-in-spec and never
+built; its named examples (`openrouter`, `groq`) were stale as well. Provider and model
+are configuration for the same reason the token is, and are read from the environment
+at call time.
 
 ---
 
@@ -178,6 +185,118 @@ other barrier.
 say when the limit lifts**. Every other limit in this project names its own reset; a
 token bucket could only say "too many requests", which would make it the single
 dishonest limit in the codebase.
+
+---
+
+## D12 · A daily-quota 429 is never retried
+
+**Decision:** retry 503, 500 and per-minute 429s with bounded exponential backoff.
+Never retry a **daily-quota** 429, and never retry any other 4xx.
+
+**Reasoning:** the daily-quota 429 carries a `RetryInfo` of about **58 seconds, and it
+is wrong** — the allowance does not return until the quota day rolls over, hours later.
+Honouring it spends the whole retry budget against a wall it cannot clear and then fails
+identically, having burned the time. It is detected from the `QuotaFailure` violation (a
+`quotaId` or `quotaMetric` naming a per-day quota) and fails immediately, naming the
+environment variable that switches model — which is the only recovery there is.
+
+Other 4xx are not retried because a request the provider rejected as invalid does not
+become valid by repetition: a wrong model ID 404s identically three times.
+
+**Rejected:** *honouring the advertised delay* — measured, and it is a lie. This is the
+general form: **never sleep an advertised retry delay without checking it against the
+quota window it names.** Recorded in `CONTRACT.md` under "never do this".
+
+**Would reopen if:** the provider's daily-quota errors start advertising a truthful
+reset. Verify by measurement, not by reading their documentation.
+
+---
+
+## D13 · A stored run can be re-summarised
+
+**Decision:** `POST /api/runs/{id}/summarize` regenerates a summary from stored chunks —
+no GitHub call, no file re-read, provenance recomputed from the stored inventory.
+
+**Reasoning:** without it, a run whose summary hit a 503 or an exhausted quota is dead.
+The only recovery would be re-analysing the repository, spending GitHub calls to re-read
+files RepoBridge already has, in order to retry the one stage that failed. Grounding is
+unaffected: provenance is computed from the inventory before the first attempt, so it is
+identical whichever attempt succeeds and whichever day the summary is generated.
+
+**Known consequence, accepted:** re-summarising **overwrites**. There is no summary
+history, and no test pins one — see `capabilities.md` 4.8.
+
+---
+
+## D14 · Configuration is read at call time, never bound at import
+
+**Decision:** every environment-backed value — the read cap, the model, the token
+budget, the deployment limits, the database URL — is read inside an accessor at call
+time. Never in a default argument, never at module import.
+
+**Reasoning:** a value bound at definition time cannot be changed without a restart and
+cannot be tested without reaching into module internals. This is not a general
+preference for configurability; it is load-bearing twice over. The provider quota is
+*per model*, so switching models is the only recovery from an exhausted day, and a
+recovery that needs a code edit and a restart is not a recovery.
+
+**Rejected:** *`def f(cfg = DEFAULT_CONFIG)`* — the Milestone 5 extraction cap froze this
+way once already, which is why it is now written down and tested
+(`test_the_model_is_read_at_call_time_not_bound_at_import`) rather than assumed.
+
+---
+
+## D15 · Successes are not wrapped in a `data` envelope
+
+**Decision:** errors get one envelope; successful responses are returned bare.
+
+**Reasoning:** the errors genuinely had two incompatible shapes — ours was
+`{"detail": {...}}`, FastAPI's validation failures were `{"detail": [...]}`, the same key
+holding an object in one case and a list in the other. A consumer could not write one
+parser. **The successes did not have that problem.** Wrapping them would re-path every
+field in every consumer, every test and every template — including every honesty field
+whose exact location `smoke.md` cites — to convey nothing a caller does not already know
+from the status code.
+
+**Rejected:** *`tasks.md`'s "consistent `data` and `error` fields or similar pattern"* —
+this is the "similar pattern". Also rejected: keeping FastAPI's `detail` key, which is
+meaningless to a consumer (detail of *what*?) and would have let a client written against
+the old shape keep working for 404s and break silently on 422s.
+
+---
+
+## D16 · Four diagnostic levels, and deliberately no `WARNING`
+
+**Decision:** `INFO`, `PARTIAL`, `DEGRADED`, `ERROR`.
+
+**Reasoning:** three levels collapse two genuinely different outcomes into "warning" — *a
+stage that finished but was bounded* (read 20 of 107) and *a stage that did not finish and
+was survived* (the tree call failed). A reader scanning a timeline needs those apart: the
+first needs no action, the second is why the run looks thinner than expected. Level
+describes the **event's own subject, not the whole run**, so one undecodable file is
+DEGRADED while the content stage that skipped past it is PARTIAL, and both are true.
+
+**Rejected:** *a `WARNING` level* — every candidate for it is really one of PARTIAL or
+DEGRADED, and **having both a precise and a vague option guarantees the vague one gets
+used**. `evals.md` names "empty or vague diagnostics" as a failure signal, and a loose
+level set is the fastest way to become vague. Enforced: PARTIAL must carry numbers,
+DEGRADED must carry a reason.
+
+---
+
+## D17 · Directories are counted, not classified
+
+**Decision:** a tree entry of type `tree` returns `None` from `classify_entry` and is
+counted. It is stored with its own row-level status (`directory`) so the identity is
+reconstructible by `GROUP BY`, but it is never SELECTED, SKIPPED or FAILED.
+
+**Reasoning:** classification answers "will we read this file's content?", which is not a
+meaningful question about a directory.
+
+**Rejected:** *marking them SKIPPED* — it would need a skip reason that is not a real
+decision mechanism, and it would inflate the skip counts with noise: "14 skipped" would
+mean something different from what a human reading diagnostics assumes. The entries are
+still fully accounted for, by the identity in `CONTRACT.md` I-1.
 
 ---
 

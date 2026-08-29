@@ -54,12 +54,15 @@ failures, generalised:
 from __future__ import annotations
 
 import logging
+import traceback
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from repobridge.core.diagnostics import redact
 
 logger = logging.getLogger(__name__)
 
@@ -198,11 +201,21 @@ def install_error_handlers(app: FastAPI) -> None:
         **The exception text is deliberately not returned.** An unhandled exception can
         carry a request URL, a header, or a connection string, and this is the one error
         path nobody wrote on purpose — so it is the one least likely to have been checked
-        for secrets. The traceback goes to the log, where `core/diagnostics.redact`'s
-        reasoning applies but no redaction has been performed; the response says only that
-        the server failed.
+        for secrets. The response says only that the server failed.
+
+        **The traceback is rendered here rather than handed to `logger.exception`**, so
+        that `redact` can run over it. `exception()` defers formatting to the handler,
+        which is past the last point this code controls — the traceback was therefore the
+        one place a secret could reach a log line unscrubbed, and CONTRACT I-6 says no
+        secret is logged. Nothing is lost: the full traceback is still emitted, and a
+        secret is the one thing that was never any use for debugging.
         """
-        logger.exception("Unhandled error serving %s %s", request.method, request.url.path)
+        logger.error(
+            "Unhandled error serving %s %s\n%s",
+            request.method,
+            request.url.path,
+            redact("".join(traceback.format_exception(type(exc), exc, exc.__traceback__))),
+        )
         return _body(
             500,
             "internal_error",

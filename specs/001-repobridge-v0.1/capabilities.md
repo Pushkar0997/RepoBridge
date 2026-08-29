@@ -79,11 +79,11 @@ The closed sets live in `config.py:SelectionConfig`; the reasoning lives in
 | 4.1 | Use any provider other than **Google Gemini** | **Deliberate** — one real integration before an adapter | `spec.md` 7.6 amendment; `decisions.md` D2; `core/summarization.py` module docstring |
 | 4.2 | Accept a provider or model as a **request field** | **Deliberate** | `spec.md` 5 (`llm_provider` removed 2026-08-18); `decisions.md` D4. The model is `REPOBRIDGE_GEMINI_MODEL`, read at call time. |
 | 4.3 | Exceed roughly **500 provider requests/day** (~20/day on quality-tier models) | External constraint, **accepted** | `AGENTS.md` budget clause; `config.py:SummarizationConfig`; `CONTRACT.md` quota arithmetic |
-| 4.4 | Recover from a **daily-quota 429** by retrying — it deliberately fails immediately | **Deliberate**, and counter-intuitive: the advertised ~58 s `RetryInfo` is wrong | `spec.md` 7.6 Decision 3; `CONTRACT.md` "Never do this". **Absent from `decisions.md`** — see section 9. |
+| 4.4 | Recover from a **daily-quota 429** by retrying — it deliberately fails immediately | **Deliberate**, and counter-intuitive: the advertised ~58 s `RetryInfo` is wrong | `spec.md` 7.6 Decision 3; `decisions.md` D12; `CONTRACT.md` "Never do this". |
 | 4.5 | Retry any other 4xx | **Deliberate** — a rejected request does not become valid by repetition | `spec.md` 7.6 Decision 3 |
 | 4.6 | Summarise a run with **zero chunks**, or a degraded run | **Deliberate** — the provider is never called; `NO_CONTENT` is returned | `core/summarization.py` grounding rule 2 |
 | 4.7 | **Stream** a summary, or show live progress while one generates | **Gap** | Nowhere as a decision. `spec.md` 8 asks the system to "surface progress or state rather than freezing"; the request is synchronous. See section 9. |
-| 4.8 | Keep more than one summary per run — re-summarising **overwrites** | **Gap** | `POST /api/runs/{id}/summarize` exists (`spec.md` 7.6 Decision 4); there is no version history. See section 9. |
+| 4.8 | Keep more than one summary per run — re-summarising **overwrites** | **Gap** | `decisions.md` D13 records the endpoint and the overwrite as an accepted consequence; there is no version history and no test pins one. |
 | 4.9 | Guarantee the model obeys the prompt's disclosure instructions | **Deliberate and stated** — the weakest of three grounding mechanisms, which is why provenance is computed independently, before the call | `core/summarization.py` grounding rule 3 |
 
 ---
@@ -120,7 +120,7 @@ The closed sets live in `config.py:SelectionConfig`; the reasoning lives in
 |---|---|---|---|
 | 7.1 | Offer a **versioned API**. Endpoints are unversioned and declared unstable. | **Deliberate**; **Gated** on an external consumer existing to pin it | `decisions.md` D6; README "API stability"; enforced by `test_no_endpoint_has_acquired_a_version_prefix` |
 | 7.2 | Serve `GET /api/runs/{id}/tree` — **deliberately not built**, despite `spec.md` 9 and `evals.md` naming it | **Deliberate** | `decisions.md` D8. `/files` serves the same fact with filtering and pagination. Note that `src/repobridge/api/routes_tree.py` exists as an empty file — see section 9. |
-| 7.3 | Wrap successful responses in a `data` envelope, as `tasks.md` suggests | **Deliberate** | `api/errors.py` "Successes are not wrapped". **Absent from `decisions.md`** — see section 9. |
+| 7.3 | Wrap successful responses in a `data` envelope, as `tasks.md` suggests | **Deliberate** | `api/errors.py` "Successes are not wrapped"; `decisions.md` D15. |
 | 7.4 | Act as an **MCP server** | **Deliberate for v0.1**; scheduled for v0.2 M2–M4, itself gated on M0 and M1 | `spec.md` 3; `AGENTS.md`; v0.2 `plan.md` |
 | 7.5 | Push, webhook, subscribe or notify — every interaction is a synchronous request | **Gap** | Nowhere. See section 9. |
 | 7.6 | Compare two runs, or diff a repository against an earlier analysis | **Gap** | Nowhere. See section 9. |
@@ -143,61 +143,77 @@ Recorded here because an agent reading only the PASS rows would over-trust them.
 
 ---
 
-## 9. Found while writing this, recorded nowhere else
+## 9. Found with no written home
 
-**These are the rows that matter most.** Everything above had a written home; nothing
-below did. Listed so the next agent does not assume the opposite. **None of these were
-fixed** — this was a documentation task.
+Everything above had somewhere it was recorded; nothing below did when this register
+was written on 2026-08-29. **Six were closed the same day** — by building the missing
+enforcement or writing the missing decision, not by softening the claim. They are kept
+here, struck through, because the register's job is to say where each absence is
+recorded, and "it used to be nowhere, now it is here" is the useful form of that.
 
-1. **The extraction identity is never verified from stored rows.** `CONTRACT.md` I-1
-   claims both identities are "recomputed from stored rows". Only the classification one
-   is (`api/routes_runs.py:937` `stored_identity_holds`, and
-   `test_identity_is_reconstructible_from_stored_rows_alone`).
-   `selected == read + failed + not_fetched` is checked only in memory
-   (`core/extraction.py:154`). `storage.content_status_counts` — the function that would
-   close it — **exists at `infra/storage.py:467` and is called by nothing in `src/` or
-   `tests/`**. Dead code and an unenforced half-invariant, together.
+### Closed
 
-2. **No test scans a log line for a secret.** I-6 says "never a log line" and claims
-   detection by value scans. The value scans cover stored rows and rendered pages only.
-   `api/errors.py:_unhandled` states outright that the traceback reaching the log has
-   **had no redaction performed**. `core/diagnostics.py:redact` also matches whole
-   secrets only, not the 8-character fragments the rendered-page scan checks for.
+1. ~~**The extraction identity is never verified from stored rows.**~~ **Closed.**
+   `selected == read + failed + not_fetched` is now recomputed by `GROUP BY` and exposed
+   as `stored_rows.stored_extraction_identity_holds`, beside the classification one.
+   `storage.content_status_counts` — dead code until then — is its implementation.
+   Pinned by `test_the_extraction_identity_is_reconstructible_from_stored_rows_alone`
+   across four extraction shapes, and by
+   `test_the_stored_extraction_identity_notices_a_row_the_counts_do_not`, which breaks a
+   row and proves the check is not reading the denormalised counts it is meant to be
+   checking. `CONTRACT.md` I-1 now names both.
 
-3. **A repository refused for size reaches GitHub and stores nothing.** I-7 says every
-   attempt that reached GitHub leaves a stored trace, with URL validation as *the*
-   deliberate exception. The shared-instance 413 path (`api/routes_runs.py:455`) spends
-   two GitHub calls, then raises without creating a run or persisting events.
-   `test_the_size_refusal_is_recorded_in_diagnostics` confirms it in a comment: "no run
-   row is created … the trace is the log and the response". Either a second deliberate
-   exception or a defect; it is currently neither.
+2. ~~**No test scans a log line for a secret.**~~ **Closed.** Three log paths could carry
+   upstream text and none was scrubbed: the GitHub error body (logged verbatim, then
+   truncated — so a cut token left a live fragment), the summariser's provider-built
+   error message, and the unhandled-exception traceback. All three now pass through
+   `redact`, and the body is redacted **before** truncation. Five scans added, each
+   confirmed to fail against the unfixed code. `CONTRACT.md` I-6 names all three
+   surfaces. The stored-value scan was raised to the rendered-page scan's standard at
+   the same time — both keys, 8-character fragments — as
+   `test_no_key_value_is_written_anywhere`.
 
-4. **The daily-quota 429 is never retried** — a real, counter-intuitive decision with a
-   measured rationale, recorded in `spec.md` 7.6 and `CONTRACT.md`, but **absent from
-   `decisions.md`**, which is where an agent is told to look for settled questions.
+3. ~~**A repository refused for size reaches GitHub and stores nothing.**~~ **Closed as
+   a defect, not adopted as an exception.** The 413 now stores a failed run carrying the
+   `resolved_ref` and `tree_entry_count` GitHub confirmed, persists its timeline, and
+   returns the `run_id` in `details` like every other refusal that got that far.
+   `CONTRACT.md` I-7 now states the boundary as *reached GitHub*, with URL validation
+   and the pre-call rate limits as its only exceptions.
 
-5. **Successes are deliberately not wrapped in a `data` envelope**, rejecting
-   `tasks.md`'s suggestion. Reasoned at length in `api/errors.py` and recorded in no
-   spec file.
+4. ~~**The daily-quota 429 is never retried, and it is not in `decisions.md`.**~~
+   **Closed:** `decisions.md` D12.
 
-6. **There is deliberately no `WARNING` diagnostic level.** `core/diagnostics.py` argues
-   it out — "having both a precise and a vague option guarantees the vague one gets
-   used". Recorded in a module docstring only.
+5. ~~**Successes are deliberately not wrapped in `data`.**~~ **Closed:** `decisions.md`
+   D15.
+
+6. ~~**There is deliberately no `WARNING` diagnostic level.**~~ **Closed:**
+   `decisions.md` D16. `decisions.md` D13 (re-summarisation), D14 (config read at call
+   time) and D17 (directories counted, not classified) were backfilled in the same pass.
+
+### Still open
 
 7. **`src/repobridge/api/routes_tree.py` and `src/repobridge/infra/logging.py` are both
    zero-byte files.** They are named for exactly the two things `decisions.md` D8 and D7
    say were deliberately *not* built. An agent finding them will reasonably assume
-   unfinished work and fill them in.
+   unfinished work and fill them in. Deleting them is the fix; it was out of scope.
 
-8. **No gist, PR, issue, release, wiki or commit-history support** (1.4), **no streaming
-   or progress for a generating summary** (4.7), **no summary history** (4.8), **no
-   push, webhook or subscription** (7.5), and **no run-to-run comparison** (7.6) are
-   recorded anywhere as either decisions or gaps.
+8. **Five capability gaps that are decisions nobody has made.** They are recorded *here*
+   now, which is better than nowhere, but none has been argued either way: no gist, PR,
+   issue, release, wiki or commit-history reading (1.4); no streaming or progress while
+   a summary generates (4.7), though `spec.md` §8 asks for exactly that; no summary
+   history (4.8); no push, webhook or subscription (7.5); no run-to-run comparison
+   (7.6). If v0.2 M0's feedback touches any of them, decide it rather than discovering
+   it again.
 
-9. **`spec.md` 11 says "No deployment scripts for cloud or containers"** and README's
-   "Out of scope" says "cloud or multi-user deployment", but Milestone 10.5 shipped a
-   `Dockerfile`, platform `HOST`/`PORT` handling and a live shared instance. The
-   multi-user half still holds; the cloud and container half is stale.
+9. **`spec.md` §11 says "No deployment scripts for cloud or containers"** while
+   Milestone 10.5 shipped a `Dockerfile`, platform `HOST`/`PORT` handling and a live
+   shared instance. The multi-user half of that non-goal still holds; the cloud and
+   container half is stale and needs a dated amendment.
 
 10. **README "Limitations" says "Local and single-user"** while a shared demo is live.
     The same staleness as 9, in the document a new user reads first.
+
+11. **`github/docs` is recorded as both 11,215 and 11,217 selected files**, and 14,901
+    vs 14,903 entries, across `plan.md`, `evals.md`, `smoke.md`, `limits.py` and the
+    README — including twice within `smoke.md` itself. One of them is a later re-run;
+    nothing says which.

@@ -309,21 +309,33 @@ async def create_failed_run(
     branch_or_ref: str | None,
     error: str,
     metadata: dict | None = None,
+    resolved_ref: str | None = None,
+    tree_entry_count: int = 0,
 ) -> str:
     """
     Persist a run that failed before there was anything to classify.
 
-    Two callers, one shape. The metadata call failed -- repo not found, rate limited,
-    unreachable -- and there is no metadata to store; or metadata succeeded and the
-    caller named a ref that does not exist, in which case `metadata` carries what was
-    genuinely retrieved. Storing it is the point: a run that knows the repository is real
-    and the *ref* was wrong tells the user something a bare failure does not.
+    Three callers, one shape:
 
-    No file rows in either case -- there was no tree to classify. Stored because a run
-    that never resolved is precisely the thing a user comes back and asks about, and it
-    is otherwise the one outcome that leaves no trace at all.
+    1. The metadata call failed -- repo not found, rate limited, unreachable -- and there
+       is no metadata to store.
+    2. Metadata succeeded and the caller named a ref that does not exist, in which case
+       `metadata` carries what was genuinely retrieved. Storing it is the point: a run
+       that knows the repository is real and the *ref* was wrong tells the user something
+       a bare failure does not.
+    3. Metadata *and* the tree both succeeded, and the instance refused the repository as
+       too large. Here `resolved_ref` and `tree_entry_count` are both passed, because both
+       were genuinely confirmed -- see below.
 
-    `resolved_ref` stays None throughout: nothing was ever confirmed.
+    No file rows in any case: either there was no tree, or there was one and we declined
+    to classify it. Stored because a run that never resolved is precisely the thing a user
+    comes back and asks about, and it is otherwise the one outcome that leaves no trace.
+
+    **`resolved_ref` and `tree_entry_count` default to "nothing was confirmed" and must be
+    passed only by a caller for which GitHub actually confirmed them** (CONTRACT I-3). For
+    case 3 that is the whole point: the tree call returned, so nulling the ref and zeroing
+    the count would be a lie in the opposite direction -- the same reasoning that keeps
+    `resolved_ref` populated on a truncated tree.
 
     URL validation failures are deliberately not persisted: those never reached GitHub, and
     there is no repository to record.
@@ -334,12 +346,14 @@ async def create_failed_run(
         owner=owner,
         name=name,
         branch_or_ref=branch_or_ref,
-        resolved_ref=None,
+        resolved_ref=resolved_ref,
         metadata=metadata or {},
-        tree_entry_count=0,
+        tree_entry_count=tree_entry_count,
         tree_truncated=False,
-        # `error`, not `tree_error`: no tree was ever attempted, and a column name must
-        # not assert a stage that did not run.
+        # `error`, not `tree_error`: for cases 1 and 2 no tree was attempted, and for
+        # case 3 the tree call succeeded -- the failure that ended the run is this
+        # instance's own policy, not GitHub's. A column name must not assert a stage
+        # that did not run, and `tree_error` would assert one that did not fail.
         tree_error=None,
         classification=None,
         error=error,
@@ -465,7 +479,16 @@ async def list_run_chunks(
 
 
 async def content_status_counts(session: AsyncSession, run_id: str) -> dict[str, int]:
-    """Recompute read/failed/not_fetched from the rows, for the identity check."""
+    """
+    Recompute read/failed/not_fetched from the rows, for the identity check.
+
+    The extraction half of CONTRACT I-1, as `reconstruct_counts` is the classification
+    half. Used by the API's `stored_extraction_identity_holds` and by the test that
+    guards it. This existed with no callers for several milestones, which meant
+    `selected == read + failed + not_fetched` was only ever checked against the
+    in-memory `ExtractionResult` that had just been built — never against what the
+    database actually holds.
+    """
     stmt = (
         select(AnalysisFile.content_status, func.count())
         .where(AnalysisFile.run_id == run_id, AnalysisFile.content_status.is_not(None))

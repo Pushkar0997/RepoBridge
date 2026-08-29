@@ -219,7 +219,7 @@ and may be reworded. `details` is always an object and may be empty.
 | `internal_error` | 500 | RepoBridge itself failed. The detail is in the server log, deliberately not in the response |
 | `instance_limit_reached` | 429 | A shared instance's hourly analysis limit. `details` carries `limit`, `used`, `retry_after_seconds` |
 | `client_limit_reached` | 429 | Your own hourly analysis limit on a shared instance |
-| `repo_too_large` | 413 | The repository exceeds what this instance accepts. `details` carries `entries` and `limit` |
+| `repo_too_large` | 413 | The repository exceeds what this instance accepts. `details` carries `entries`, `limit`, `repo` and `run_id` — the refusal is stored as a failed run, so you can open it |
 
 Status codes name the faulting party: 4xx means your request, 429/502 means GitHub, 500
 means RepoBridge. No endpoint returns a 4xx for an upstream or internal problem.
@@ -300,8 +300,15 @@ curl "http://127.0.0.1:8000/api/runs?status=degraded&owner=psf&since=2026-08-18&
 
 One stored run: everything in a `/api/runs` item, plus `stored_rows` — the counts
 recomputed from the stored entry rows rather than read off the run's own columns, so a
-drifted count cannot report itself as consistent. `stored_rows.stored_identity_holds` is
-`true` when they agree, and `null` for a degraded run that stored no entries.
+drifted count cannot report itself as consistent. Two identities are reported, both
+`true` when they hold and `null` for a run that stored no entries:
+
+| Field | Identity |
+|---|---|
+| `stored_identity_holds` | `total_entries == directories + selected + skipped + failed` |
+| `stored_extraction_identity_holds` | `selected == read + failed + not_fetched` |
+
+`by_status` and `by_content_status` carry the recomputed counts each is derived from.
 
 **Use `status`, not the error fields, to tell what happened:**
 
@@ -309,7 +316,7 @@ drifted count cannot report itself as consistent. `stored_rows.stored_identity_h
 |---|---|---|---|
 | `completed` | metadata and tree both retrieved | `null` | `null`, unless GitHub truncated the tree |
 | `degraded` | metadata retrieved, tree call failed | `null` | set |
-| `failed` | metadata never resolved, or a named ref did not exist | set | `null` |
+| `failed` | metadata never resolved, a named ref did not exist, or the instance refused the repository as too large | set | `null` |
 
 A client checking only `tree_error` sees `null` on a **failed** run and would conclude it
 succeeded.

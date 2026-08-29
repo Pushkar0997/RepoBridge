@@ -461,14 +461,46 @@ async def analyze_repo(
                 entries=tree_entry_count,
                 limit=deployment.max_repo_entries,
             )
-            events.flush_suppressed()
-            raise api_error(
-                413,
-                "repo_too_large",
+            size_message = (
                 f"{normalized.owner}/{normalized.name} has {tree_entry_count:,} tree "
                 f"entries. This shared instance accepts repositories up to "
                 f"{deployment.max_repo_entries:,} entries, so that reading them cannot "
-                "exhaust the operator's GitHub quota. Try a smaller repository.",
+                "exhaust the operator's GitHub quota. Try a smaller repository."
+            )
+            # This refusal reached GitHub -- two calls, both successful -- so it leaves a
+            # stored trace like every other failure that got that far (CONTRACT I-7). It
+            # previously stored nothing, which made this instance's own spend-control
+            # policy the one thing a diagnostics tool could not show you.
+            #
+            # `resolved_ref` and the entry count are both carried through: GitHub answered
+            # for this ref and told us exactly how big the repository is. Discarding that
+            # would understate what the attempt actually established.
+            failed_run_id = await storage.create_failed_run(
+                session,
+                repo_url=str(request.repo_url),
+                owner=normalized.owner,
+                name=normalized.name,
+                branch_or_ref=request.branch_or_ref,
+                error=size_message,
+                metadata=metadata,
+                resolved_ref=attempted_ref,
+                tree_entry_count=tree_entry_count,
+            )
+            events.info(
+                Stage.PERSISTENCE,
+                "The refused run was stored so the attempt leaves a trace.",
+                run_status="failed",
+                reason="repo_too_large",
+            )
+            events.flush_suppressed()
+            await storage.persist_events(session, failed_run_id, events)
+            # the run_id travels with the error so a caller can open the refused run, as
+            # it does for a metadata failure and for a bad ref
+            raise api_error(
+                413,
+                "repo_too_large",
+                size_message,
+                run_id=failed_run_id,
                 entries=tree_entry_count,
                 limit=deployment.max_repo_entries,
                 repo=f"{normalized.owner}/{normalized.name}",
@@ -914,13 +946,46 @@ async def list_runs(
     }
 
 
+def _extraction_identity_holds(
+    run, by_status: dict[str, int], by_content_status: dict[str, int]
+) -> bool | None:
+    """
+    `selected == read + failed + not_fetched`, recomputed from stored rows (CONTRACT I-1).
+
+    None, not False, for a run that never classified anything: a degraded run stored no
+    entry rows, so the identity is vacuous rather than violated. Same treatment as
+    `stored_identity_holds`, for the same reason — reporting False there would make a
+    correctly-handled failure look like a data defect.
+
+    **Every** content status is summed, not the three known ones. A status this function
+    does not recognise must break the identity loudly; filtering to a known set is how a
+    new value that falls through every branch gets certified as consistent.
+
+    A completed run with selected files and no content rows is False, and should be: the
+    extraction stage runs whenever anything is selected, so zero rows means it did not
+    persist what it read.
+    """
+    if run.status != RunStatus.COMPLETED.value:
+        return None
+    return by_status.get("selected", 0) == sum(by_content_status.values())
+
+
 @router.get("/runs/{run_id}", response_class=JSONResponse)
 async def get_run(run_id: str, session: AsyncSession = Depends(get_session)):
     """
     One stored run.
 
-    `stored_identity_holds` is recomputed from the rows rather than read off the run's
-    denormalised counts, so a drifted count cannot report itself as consistent.
+    Both halves of the accounting identity (CONTRACT I-1) are recomputed from the rows
+    rather than read off the run's denormalised counts, so a drifted count cannot report
+    itself as consistent:
+
+    - `stored_identity_holds` — `total_entries == directories + selected + skipped + failed`
+    - `stored_extraction_identity_holds` — `selected == read + failed + not_fetched`
+
+    The second one existed only in memory (`ExtractionResult.accounts_for_every_selected_file`)
+    until it was wired up here. An in-memory check certifies the object that was just
+    built; it says nothing about what reached the database, which is what a later reader
+    actually gets.
     """
     run = await storage.get_run(session, run_id)
     if run is None:
@@ -928,14 +993,19 @@ async def get_run(run_id: str, session: AsyncSession = Depends(get_session)):
 
     summary = _run_summary(run)
     by_status = await storage.reconstruct_counts(session, run_id)
+    by_content_status = await storage.content_status_counts(session, run_id)
     stored_total = sum(by_status.values())
     summary["stored_rows"] = {
         "by_status": by_status,
+        "by_content_status": by_content_status,
         "total": stored_total,
         "skipped_count_by_reason": await storage.counts_by_reason(session, run_id),
         # a degraded run stored no entries, so the identity is vacuous there
         "stored_identity_holds": (
             stored_total == run.tree_entry_count if run.status == "completed" else None
+        ),
+        "stored_extraction_identity_holds": _extraction_identity_holds(
+            run, by_status, by_content_status
         ),
     }
     return summary

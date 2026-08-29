@@ -208,6 +208,130 @@ def test_stored_content_status_reconstructs_the_identity(install_transport):
     assert len(statuses) == run["classification"]["selected_count"] == 3
 
 
+@pytest.mark.parametrize(
+    "name,entries,cap,content_responder",
+    [
+        ("clean", None, None, None),
+        ("capped", [_blob(f"src/f{i:03d}.py", 40) for i in range(9)], "4", None),
+        (
+            "read failure",
+            None,
+            None,
+            lambda path: (
+                httpx.Response(404, json={"message": "Not Found"})
+                if path == "src/app.py"
+                else _contents_response(path, FILE_CONTENTS.get(path, "x\n"))
+            ),
+        ),
+        (
+            "extraction failure",
+            None,
+            None,
+            lambda path: _contents_response(
+                path, "{not valid json" if path == "nb.ipynb" else FILE_CONTENTS.get(path, "x\n")
+            ),
+        ),
+    ],
+)
+def test_the_extraction_identity_is_reconstructible_from_stored_rows_alone(
+    install_transport, monkeypatch, name, entries, cap, content_responder
+):
+    """
+    CONTRACT I-1, second half: `selected == read + failed + not_fetched`, recomputed by
+    GROUP BY over `analysis_files` rather than read off `files_read` and its siblings.
+
+    The in-memory `accounts_for_every_selected_file` certifies the object that was just
+    built. It cannot see a row that failed to persist, a `content_status` left NULL, or
+    a denormalised column that drifted from the rows it summarises -- and a later reader
+    gets the rows, not the object. Asserted across every shape the extraction stage can
+    produce, because a single clean run exercises exactly one of the three statuses.
+    """
+    if cap:
+        monkeypatch.setenv("REPOBRIDGE_MAX_FILES_PER_RUN", cap)
+
+    body, _ = _analyze(install_transport, entries, content_responder)
+    run = client.get(f"/api/runs/{body['run_id']}").json()
+    stored = run["stored_rows"]
+
+    by_content = stored["by_content_status"]
+    selected = stored["by_status"]["selected"]
+
+    assert stored["stored_extraction_identity_holds"] is True, name
+    assert selected == sum(by_content.values()), name
+    # and it is the *stored* rows saying so, not the run's cached counts agreeing
+    # with themselves
+    assert by_content.get("read", 0) == run["extraction"]["files_read"], name
+    assert by_content.get("failed", 0) == run["extraction"]["files_failed"], name
+    assert by_content.get("not_fetched", 0) == run["extraction"]["files_not_fetched"], name
+
+
+def test_the_stored_extraction_identity_notices_a_row_the_counts_do_not(install_transport):
+    """
+    The point of recomputing: break a row and the identity must fail, while the
+    denormalised columns carry on reporting success.
+
+    Without this, `stored_extraction_identity_holds` could be computed from the same
+    numbers it is supposed to be checking and would certify itself.
+    """
+    import asyncio
+
+    from sqlalchemy import update
+
+    from repobridge.infra.db import get_database
+    from repobridge.infra.schemas import AnalysisFile
+
+    body, _ = _analyze(install_transport)
+    run_id = body["run_id"]
+    assert client.get(f"/api/runs/{run_id}").json()["stored_rows"][
+        "stored_extraction_identity_holds"
+    ] is True
+
+    async def blank_one_content_status() -> None:
+        async with get_database().session() as session:
+            await session.execute(
+                update(AnalysisFile)
+                .where(AnalysisFile.run_id == run_id, AnalysisFile.path == "README.md")
+                .values(content_status=None)
+            )
+            await session.commit()
+
+    asyncio.run(blank_one_content_status())
+
+    run = client.get(f"/api/runs/{run_id}").json()
+    assert run["stored_rows"]["stored_extraction_identity_holds"] is False
+    # the cached counts are untouched and still claim everything is fine, which is
+    # exactly the drift this check exists to catch
+    assert run["extraction"]["files_read"] == 3
+
+
+def test_a_degraded_run_reports_the_extraction_identity_as_vacuous_not_violated(
+    install_transport,
+):
+    """None, not False: no tree arrived, so there was never anything to account for."""
+
+    def responder(ref: str) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    _install(install_transport, responder)
+    run_id = client.post("/api/analyze", json={"repo_url": REPO_URL}).json()["run_id"]
+
+    stored = client.get(f"/api/runs/{run_id}").json()["stored_rows"]
+    assert stored["stored_extraction_identity_holds"] is None
+    assert stored["stored_identity_holds"] is None
+
+
+def test_a_completed_run_with_nothing_selected_still_holds_the_extraction_identity(
+    install_transport,
+):
+    """0 == 0 + 0 + 0 is a true statement, not a vacuous one. It must not report None."""
+    body, _ = _analyze(install_transport, [_blob("assets/logo.png", 4000)])
+
+    stored = client.get(f"/api/runs/{body['run_id']}").json()["stored_rows"]
+    assert stored["by_status"].get("selected", 0) == 0
+    assert stored["by_content_status"] == {}
+    assert stored["stored_extraction_identity_holds"] is True
+
+
 def test_chunks_endpoint_returns_traceable_chunks(install_transport):
     body, _ = _analyze(install_transport)
     run_id = body["run_id"]

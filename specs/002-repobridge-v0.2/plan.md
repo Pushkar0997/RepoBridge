@@ -200,9 +200,11 @@ or "fixes" them by accident.
   threshold is ~100k.
 - **The Dockerfile has never been built** — static consistency tests cover the class
   of failure; the image itself is untested.
-- **Capability register** — the "not supported" facts are spread across
-  `selection.md`, `spec.md` non-goals and gated work. A single register in
-  `architecture.md` would stop an agent building on an imagined capability.
+- ~~**Capability register**~~ — **built, 2026-08-29:**
+  `specs/001-repobridge-v0.1/capabilities.md`. Every capability the system does not
+  have, tagged deliberate / gap / gated, with where each absence is recorded. Its
+  section 9 lists what was found recorded nowhere — read that before assuming a
+  capability exists. It is descriptive: it does not create or reverse a decision.
 
 ## Gated work
 

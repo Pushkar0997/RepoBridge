@@ -46,6 +46,7 @@ from repobridge.config import (
     get_gemini_api_key,
     get_summarization_config,
 )
+from repobridge.core.diagnostics import redact
 from repobridge.core.ranking import path_rank_key
 
 logger = logging.getLogger(__name__)
@@ -684,7 +685,9 @@ async def summarise(
     try:
         text = await caller(prompt)
     except SummarizationError as exc:
-        logger.warning("Summarisation failed for %s: %s", repo, exc)
+        # redacted: the message is built from the provider's own error body, which is
+        # the one string here that this code did not write (CONTRACT I-6)
+        logger.warning("Summarisation failed for %s: %s", repo, redact(str(exc)))
         return SummaryResult(
             status=SummaryStatus.PROVIDER_ERROR,
             provenance=provenance,

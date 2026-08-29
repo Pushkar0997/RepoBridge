@@ -209,6 +209,131 @@ def test_an_internal_failure_blames_this_application_and_leaks_nothing(monkeypat
 
 
 # --------------------------------------------------------------------------
+# no secret reaches a log line (CONTRACT I-6)
+# --------------------------------------------------------------------------
+
+#: Distinctive enough that a substring match cannot be a coincidence, and long enough
+#: that an 8-character window slides across it many times.
+LOG_GITHUB_TOKEN = "ghp_LOGTOKENMUSTNEVERREACHALOGLINE000000"
+LOG_GEMINI_KEY = "AIzaSyLOGKEYMUSTNEVERREACHALOGLINE000000"
+
+
+def _assert_no_secret_in(text: str, where: str) -> None:
+    """
+    The same scan the rendered-page test applies, against captured log output.
+
+    Whole value first, then every 8-character window of it. The fragment half is not
+    theoretical here: the GitHub error path logs the upstream body truncated to 500
+    characters, and truncating a token leaves precisely such a fragment.
+    """
+    for name, secret in (("GitHub token", LOG_GITHUB_TOKEN), ("Gemini key", LOG_GEMINI_KEY)):
+        assert secret not in text, f"the {name} reached {where}"
+        for start in range(0, len(secret) - 8):
+            assert secret[start : start + 8] not in text, (
+                f"an 8-character fragment of the {name} reached {where}"
+            )
+
+
+@pytest.fixture
+def keys_set(monkeypatch):
+    monkeypatch.setenv("REPOBRIDGE_GITHUB_TOKEN", LOG_GITHUB_TOKEN)
+    monkeypatch.setenv("REPOBRIDGE_GEMINI_API_KEY", LOG_GEMINI_KEY)
+
+
+@pytest.fixture
+def logs(caplog):
+    """Capture everything RepoBridge logs, at every level, including DEBUG."""
+    import logging
+
+    caplog.set_level(logging.DEBUG, logger="repobridge")
+    caplog.set_level(logging.DEBUG)
+    return caplog
+
+
+def test_a_clean_run_puts_no_secret_in_a_log_line(install_transport, keys_set, logs, provider):
+    """The ordinary path: metadata, tree, classification, reads, chunks, a summary."""
+    provider()
+    run_id = _run(install_transport)
+    for path in (f"/api/runs/{run_id}", f"/api/runs/{run_id}/diagnostics", "/api/runs"):
+        client.get(path)
+
+    assert logs.text, "nothing was captured, so this test proves nothing"
+    _assert_no_secret_in(logs.text, "a log line during a clean run")
+
+
+def test_an_upstream_body_echoing_the_token_is_redacted_before_it_is_logged(
+    install_transport, keys_set, logs
+):
+    """
+    GitHub's raw error body is logged for debugging. If it quotes the request's own
+    Authorization header back -- which is exactly what a misconfigured proxy or a verbose
+    upstream does -- the token lands in the log unless something scrubs it.
+    """
+    body = f"upstream failure; authorization=Bearer {LOG_GITHUB_TOKEN}; retry later"
+    _install(install_transport, lambda ref: httpx.Response(500, text=body))
+    client.post("/api/analyze", json={"repo_url": REPO_URL})
+
+    assert "upstream failure" in logs.text, "the body was not logged at all; scan is vacuous"
+    _assert_no_secret_in(logs.text, "the GitHub error-body log line")
+
+
+def test_a_token_split_by_truncation_still_does_not_leak_a_fragment(
+    install_transport, keys_set, logs
+):
+    """
+    The reason redaction runs *before* truncation, pinned.
+
+    The upstream body is cut at 500 characters. Put the token so it straddles the cut and
+    a scrub-then-truncate order is safe while truncate-then-scrub leaves a live fragment
+    that no whole-value check would ever notice.
+    """
+    padding = "x" * 480
+    _install(
+        install_transport,
+        lambda ref: httpx.Response(500, text=f"{padding}{LOG_GITHUB_TOKEN}{padding}"),
+    )
+    client.post("/api/analyze", json={"repo_url": REPO_URL})
+
+    _assert_no_secret_in(logs.text, "a truncated upstream body")
+
+
+def test_an_unhandled_traceback_is_redacted_before_it_reaches_the_log(
+    monkeypatch, keys_set, logs
+):
+    """
+    The path that had no guard at all. An unhandled exception is the one nobody wrote on
+    purpose, so it is the one least likely to have been checked -- and `logger.exception`
+    defers formatting past the last point this code controls.
+    """
+
+    def boom(*a, **kw):
+        raise RuntimeError(f"connecting with token={LOG_GITHUB_TOKEN} failed")
+
+    monkeypatch.setattr(routes_runs.storage, "list_runs", boom)
+    quiet = TestClient(app, raise_server_exceptions=False)
+    assert quiet.get("/api/runs").status_code == 500
+
+    assert "RuntimeError" in logs.text, "the traceback was not logged; scan is vacuous"
+    assert "Unhandled error serving" in logs.text
+    _assert_no_secret_in(logs.text, "the unhandled-exception traceback")
+
+
+def test_a_provider_failure_puts_no_secret_in_a_log_line(install_transport, keys_set, logs):
+    """The summariser logs its own failure, and its message comes from the provider."""
+
+    async def call(prompt: str) -> str:
+        raise RuntimeError(f"provider refused key={LOG_GEMINI_KEY}")
+
+    app.dependency_overrides[routes_runs.get_summary_provider] = lambda: call
+    try:
+        _run(install_transport)
+    finally:
+        app.dependency_overrides.pop(routes_runs.get_summary_provider, None)
+
+    _assert_no_secret_in(logs.text, "a log line after a provider failure")
+
+
+# --------------------------------------------------------------------------
 # pagination: one shape everywhere
 # --------------------------------------------------------------------------
 

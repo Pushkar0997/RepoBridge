@@ -259,9 +259,26 @@ def test_only_token_named_columns_are_counts():
                 )
 
 
-async def test_no_token_value_is_written_anywhere(isolated_database, monkeypatch):
-    secret = "ghp_TOKENVALUETHATMUSTNOTBEPERSISTED"
-    monkeypatch.setenv("REPOBRIDGE_GITHUB_TOKEN", secret)
+#: Both keys, not just the GitHub token. The rendered-page scan in test_ui.py has always
+#: checked both; this one checked one, which meant the Gemini key was covered on every
+#: page and on no stored row.
+STORED_GITHUB_TOKEN = "ghp_TOKENVALUETHATMUSTNOTBEPERSISTED0000"
+STORED_GEMINI_KEY = "AIzaSyKEYVALUETHATMUSTNOTBEPERSISTED0000"
+
+
+async def test_no_key_value_is_written_anywhere(isolated_database, monkeypatch):
+    """
+    A value scan over every stored column, for both keys and for any 8-character
+    fragment of either.
+
+    Brought level with `test_no_key_value_can_reach_a_template` deliberately: the two are
+    the same invariant (CONTRACT I-6) applied to the two places a value can come to rest,
+    and holding them to different standards meant a partial reveal was a failure in a
+    template and a pass in a column. A mask would fail this too, and should -- a mask
+    still discloses length and usually the leading characters.
+    """
+    monkeypatch.setenv("REPOBRIDGE_GITHUB_TOKEN", STORED_GITHUB_TOKEN)
+    monkeypatch.setenv("REPOBRIDGE_GEMINI_API_KEY", STORED_GEMINI_KEY)
 
     async with isolated_database.session() as session:
         run_id, _ = await _store(session, MIXED)
@@ -272,7 +289,13 @@ async def test_no_token_value_is_written_anywhere(isolated_database, monkeypatch
         haystack += " ".join(
             str(getattr(r, c.name)) for r in rows for c in AnalysisFile.__table__.columns
         )
-        assert secret not in haystack
+
+        for name, secret in (("GitHub token", STORED_GITHUB_TOKEN), ("Gemini key", STORED_GEMINI_KEY)):
+            assert secret not in haystack, f"the {name} was persisted"
+            for start in range(0, len(secret) - 8):
+                assert secret[start : start + 8] not in haystack, (
+                    f"an 8-character fragment of the {name} was persisted"
+                )
 
 
 # --------------------------------------------------------------------------
