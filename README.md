@@ -4,7 +4,7 @@ RepoBridge is a lightweight local-first tool that turns public GitHub repositori
 
 Instead of throwing raw HTML or random files at a model and hoping it understands your codebase, RepoBridge uses official GitHub APIs to retrieve the repository tree and readable contents, extracts normalized text from supported files, generates a grounded summary, and exposes everything through a small web UI and a local REST API.
 
-> Status: v0.1 – early development, private and proprietary, not yet ready for public use.
+> Status: v0.1 is complete. RepoBridge is private and proprietary; the optional shared demo is an interim deployment for feedback.
 
 ---
 
@@ -39,7 +39,7 @@ RepoBridge v0.1 aims to:
   - a small local web UI, and
   - a local REST API for scripts or LLM tools.
 
-No crawling, no browser automation, no cloud deployment – local-first and focused.
+No crawling or browser automation. RepoBridge is local-first, with an optional shared demo deployment.
 
 ---
 
