@@ -17,6 +17,10 @@ v0.2 may start until M0 closes, because everything after it assumes the
 accountability guarantee is what users value — and that is exactly what is being
 tested.
 
+The owner has requested a future hosted multi-user platform. A v0.3 discovery draft
+now records the two modes, isolation and quota requirements, and free-tier blockers.
+This is planning only: M0 remains open, and no implementation has started.
+
 ## Next action
 
 Collect feedback verbatim. Answer one question in writing: **did anyone notice or
@@ -50,6 +54,7 @@ propose next. Do not write any code yet.
 | `CONTRACT.md` | what must never break — read before every task |
 | `specs/001-repobridge-v0.1/` | shipped version: spec, plan, tasks, evals, selection, smoke |
 | `specs/002-repobridge-v0.2/` | next version — draft, gated on M0 |
+| `specs/003-repobridge-hosted-platform/` | future hosted workspaces — discovery draft, gated on M0 and free/security feasibility |
 | `specs/decisions.md` | settled questions and their rejected alternatives |
 | `AGENT_LOG.md` | what happened, newest first |
 | `HANDOFF.md` | orchestrator context: how the work is run, and why |

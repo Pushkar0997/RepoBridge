@@ -221,4 +221,11 @@ or "fixes" them by accident.
 *When scope changes, record it here. Dated. State what moved, why, and what prompted
 it. Criteria move intact — they are never deleted.*
 
-*(none yet for v0.2)*
+### 2026-10-17 — Hosted multi-user platform request
+
+The owner has asked to scope a free hosted platform with a shared anonymous quota
+pool and optional Google sign-in plus per-user provider credentials and isolated run
+data. This satisfies the condition to **write a future feasibility proposal**; it does
+not satisfy the former v0.2 implementation gate and does not close M0. The draft lives
+in `specs/003-repobridge-hosted-platform/`. M0's feedback criteria remain intact and
+block all v0.2 implementation milestones until completed.

@@ -6,6 +6,58 @@ correction as a new one. This is a history; `BRIEF.md` is the status page.
 Archive entries older than the last two milestones into `docs/agent-log-archive.md`
 once this passes ~50 entries. Do not delete.
 
+## 2026-10-17 — Free storage candidates added to hosted-platform discovery
+
+**Milestone:** v0.2 M0 — feedback gate; future v0.3 feasibility only
+**Task:** record initial managed-storage candidates after checking primary provider
+documentation
+**Landed:** amended `specs/003-repobridge-hosted-platform/spec.md` and `plan.md` with
+Neon Free as the leading compatibility candidate and Cloudflare D1 as an alternate
+requiring runtime/storage redesign; recorded candidate status in D18
+**Did not land:** no provider selected, no code, no deployment or account changes, no
+tests
+
+**Finding:** Neon Free's published Postgres allowance makes it worth a measured proof
+against the existing SQLAlchemy path, but recovery, included transfer/compute, storage
+exhaustion, and no-charge behavior still need verification. Cloudflare D1 has a more
+significant integration gap: the app's maximum 102 GitHub calls is higher than the
+Free Worker's 50 subrequests per invocation, and current database access uses
+SQLAlchemy/aiosqlite rather than a D1 binding.
+
+**Found, not fixed:** no datastore is selected; M0 feedback is still open; I-6 still
+blocks request-supplied credentials; and free-tier limits, provider dashboard quotas,
+data recovery, and billing controls remain to be verified before an implementation
+decision.
+
+---
+
+## 2026-10-17 — Hosted-platform discovery amendment — v0.2 M0 remains blocking
+
+**Milestone:** v0.2 M0 — feedback gate; future v0.3 platform discovery only
+**Tasks attempted:** record the owner's request for optional Google sign-in,
+per-user GitHub/Gemini keys and isolated workspaces, while preserving the active M0
+gate; verify provider quota and free-hosting assumptions against primary vendor docs
+**Landed:** D18 in `specs/decisions.md`; dated amendments in the v0.2 spec and plan;
+draft v0.3 hosted-platform spec and sequential plan; `BRIEF.md` status pointer
+**Did not land:** no code, contract relaxation, auth, tenant storage, credentials, or
+deployment changes
+**Blockers:** v0.2 tester feedback is still outstanding; `CONTRACT.md` I-6 still
+prohibits request-supplied user keys; no durable $0 datastore has been selected
+
+**Design recorded:** anonymous mode is an owner-key shared pool with hard global
+budgets; signed-in users would have logically isolated workspaces and BYOK. A shared
+tenant-scoped relational database is preferred over one physical database per user.
+The draft does not promise durable storage on Render Free Postgres, which expires
+after 30 days and has no backups. GitHub's standard authenticated REST limit is
+5,000/hour/user; Gemini limits vary and are project-scoped, not key-scoped.
+
+**Noticed, not fixed:** free-provider terms and quotas can change; existing v0.1/v0.2
+quota assumptions still require revalidation before implementation. No durable free
+storage provider has been selected, and the future credential flow still requires a
+threat model and an explicit I-6 amendment. The M0 feedback question remains open.
+
+**Tests:** not run; this slice changed specifications only.
+
 ---
 
 ## 2026-09-01 — Opus / chat — v0.2 final audit closure

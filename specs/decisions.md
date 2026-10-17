@@ -300,6 +300,51 @@ still fully accounted for, by the identity in `CONTRACT.md` I-1.
 
 ---
 
+## D18 · Reopen hosted multi-user work for feasibility planning only
+
+**Decision:** the owner request of 2026-10-17 reopens D10's multi-user gate for
+scoping a future version. It does not change v0.1 or v0.2 runtime behavior, close v0.2
+M0, or authorize implementation. The dated proposal is in
+`specs/003-repobridge-hosted-platform/`.
+
+**Proposed product shape:** anonymous visitors use a clearly disclosed shared demo
+pool backed by operator credentials and a hard instance-wide budget. Each guest browser
+session gets a short-lived logical data scope in the shared database; sharing a quota
+does not make runs visible between guests. Google-signed-in users get their own logical
+workspace and bring their own GitHub and Gemini keys. A workspace boundary is a
+data-access boundary, not a separate database instance per person: one shared
+relational store with mandatory tenant ownership is the free-hosting candidate.
+
+**Required gates before implementation:** M0 still closes first. The platform must
+then pass a zero-cost hosting and durable-storage feasibility check, and the credential
+flow must receive a threat review and a narrow I-6 amendment. Until then, I-6 continues
+to prohibit credentials in requests or storage.
+
+**Quota facts to design around:** GitHub's standard authenticated REST API limit is
+5,000 requests per hour per user, not 5,000 per minute or per day. Gemini limits vary
+by model, project, and tier; they are applied per project, not per API key, and the
+active values are shown in AI Studio. Do not encode `5 RPM` or `100 RPD` as universal
+limits. Each mode needs app-side RPM and daily caps, and provider errors/headers must be
+reported truthfully. See the future spec for the reviewed primary sources.
+
+**Free-tier constraints:** Render Free Postgres expires after 30 days and has no
+backups; Free web services have no persistent disk. Neon Free is the leading first
+candidate for a no-cost persistence migration proof because the app uses SQLAlchemy,
+but it currently has only the SQLite async driver and SQLite-specific schema-version
+handling. A Postgres driver, database-layer changes, and migrations are required. Its
+limits, recovery, and billing-stop behavior remain unverified for this workload.
+Cloudflare D1 is an alternate with material runtime
+constraints: the current maximum 102 GitHub calls exceeds the Free Worker's 50
+subrequests per invocation, and the current SQLAlchemy/aiosqlite path is not a D1
+binding adapter. Neither is selected. If no durable $0 store passes the feasibility
+gate, stop and ask whether temporary workspaces with export are acceptable.
+
+**Still in force:** D3's public-repository-only gate. Users' own free Gemini keys do not
+remove Google's free-service data-use terms; private repositories stay out of scope
+until that privacy gate is independently cleared.
+
+---
+
 ## Deliberate asymmetries
 
 *Record these, or someone will "fix" them.*

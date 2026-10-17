@@ -157,3 +157,19 @@ These held for all of v0.1 and continue unless deliberately amended:
 - Scope changes are recorded as dated amendments; criteria move intact rather than
   being deleted
 - Live API calls are budgeted and spent once per slice, deliberately
+
+## Amendments
+
+### 2026-10-17 — Hosted multi-user platform request
+
+The owner requested planning for a future hosted platform with an anonymous shared
+demo pool and optional Google-authenticated, per-user workspaces using each user's
+own GitHub and Gemini credentials. The request opens a **scoping and feasibility
+draft only** in `specs/003-repobridge-hosted-platform/`; it does not add this work to
+v0.2 or authorize implementation.
+
+M0 remains BLOCKING. Its tester-feedback deliverables and coverage-disclosure question
+are unchanged and unanswered. The existing multi-user gate remains in force for v0.2.
+The future draft is subordinate to `CONTRACT.md`; in particular, no request-supplied
+credential path may be implemented until a narrow, dated security amendment to I-6 is
+reviewed and approved.
