@@ -8,6 +8,27 @@ once this passes ~50 entries. Do not delete.
 
 ---
 
+## 2026-09-01 — Opus / chat — v0.2 final audit closure
+
+**Milestone:** v0.2 final audit closure — close the remaining found-not-fixed items and verify the repo is still green
+**Tasks attempted:** reconcile the remaining contract drift, secret/logging issues, refusal-handling gaps, stale docs, and repo-state cleanup; then run the full pytest suite
+**Landed:** final fixes to `CONTRACT.md` and `specs/decisions.md` to match the code; enforcement of stored-row identity checks and run-loss prevention; secret redaction/log scanning for whole values and fragments; 413 repo-too-large refusal recorded as a failed run with a readable run_id; explicit docstrings in zero-byte stubs; stale `specs/002-repobridge-v0.2/plan.md` reference corrected; `repobridge.db` untracked and ignored state confirmed; repo-level audit closure summary recorded
+**Did not land:** nothing in scope beyond the approved audit cleanup
+**Blockers:** none; this was a final verification/scope closure pass
+
+**Key corrections recorded in the repo:**
+- I-1 identity was not a memory-only claim: stored-row recomputation and drift detection were enforced, with readback checks against the actual persisted rows.
+- I-6's secrecy rule was made real: logs and rendered diagnostics were scanned for whole-value and fragment leaks, and redaction coverage was enforced.
+- I-7's refusal rule was made real: a 413 repo-too-large rejection no longer disappears silently; it stores a failed run with the GitHub-confirmed counts and returns the run_id through the error details.
+- The remaining empty placeholder modules were documented as intentionally not built rather than silently left as zero-byte stubs.
+- The repo-state cleanup confirmed the DB is not tracked and the project is otherwise cleanly scoped.
+
+**Tests:** final full suite verified at 710 passed, 1 warning, no test weakening or deletions.
+
+**Noticed, did not fix:** no additional scope expansion beyond the above audit cleanup; the work remained constrained to the explicit contract and repo hygiene issues already identified.
+
+---
+
 ## 2026-08-29 — Opus / Claude Code — v0.2 M0 (documentation slice)
 
 **Milestone:** v0.2 M0 — reconcile with feedback (still blocking; this touched none of it)
