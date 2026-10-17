@@ -31,6 +31,9 @@ dev = [
 where = ["src"]
 include = ["repobridge*"]
 
+[tool.setuptools.package-data]
+repobridge = ["ui/templates/*.html", "ui/static/css/*.css", "ui/static/js/*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # "auto" rather than "strict": the GitHub client tests are entirely async, and
